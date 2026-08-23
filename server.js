@@ -255,7 +255,83 @@ async function getUserWithStats(userId) {
 
 // ------------------- AUTH ENDPOINTS -------------------
 
-// Verify SBTET PIN (Step 1 of Sign-Up)
+// Send SBTET Mobile OTP (Step 1 of Sign-Up)
+app.post('/api/auth/send-sbtet-otp', async (req, res) => {
+  const { pin, mobile } = req.body;
+  if (!pin || !pin.trim() || !mobile || !mobile.trim()) {
+    return res.status(400).json({ error: 'SBTET Roll Number (PIN) and Mobile Number are required' });
+  }
+
+  const cleanPin = pin.trim().toUpperCase();
+  const cleanMobile = mobile.trim();
+
+  try {
+    // Check if PIN is already registered in users table
+    const checkExisting = await pool.query('SELECT id FROM users WHERE LOWER(pin) = LOWER($1)', [cleanPin]);
+    if (checkExisting.rows.length > 0) {
+      return res.status(400).json({ error: 'An account with this SBTET PIN is already registered. Please log in.' });
+    }
+
+    console.log(`[SBTET-OTP] Requesting OTP from SBTET for PIN: ${cleanPin}, Phone: ${cleanMobile}...`);
+    const otpResult = await sbtet.generateOtp(cleanPin, cleanMobile);
+
+    if (otpResult.success) {
+      console.log(`[SBTET-OTP] OTP sent successfully for PIN: ${cleanPin}`);
+      return res.json({
+        success: true,
+        message: otpResult.description || 'OTP sent successfully to your mobile number via SBTET.'
+      });
+    } else {
+      return res.status(400).json({
+        error: otpResult.error || 'Failed to send OTP via SBTET portal. Please check your PIN and Mobile Number.'
+      });
+    }
+  } catch (err) {
+    console.error('[SBTET-OTP Error]', err);
+    res.status(500).json({ error: 'Server error while contacting SBTET OTP service' });
+  }
+});
+
+// Verify SBTET Mobile OTP (Step 2 of Sign-Up)
+app.post('/api/auth/verify-sbtet-otp', async (req, res) => {
+  const { pin, mobile, otp } = req.body;
+  if (!pin || !mobile || !otp) {
+    return res.status(400).json({ error: 'PIN, Mobile Number, and OTP are required' });
+  }
+
+  const cleanPin = pin.trim().toUpperCase();
+  const cleanMobile = mobile.trim();
+  const cleanOtp = otp.trim();
+
+  try {
+    console.log(`[SBTET-OTP-Verify] Verifying OTP for PIN: ${cleanPin}...`);
+    const verifyResult = await sbtet.verifyOtpAndUpdate(cleanPin, cleanMobile, cleanOtp);
+
+    if (verifyResult.success && verifyResult.student) {
+      const s = verifyResult.student;
+      console.log(`[SBTET-OTP-Verify] Verified student record: ${s.name} (${s.collegeName})`);
+      return res.json({
+        success: true,
+        student: {
+          pin: cleanPin,
+          name: s.name,
+          branch: s.branchName,
+          college: s.collegeName,
+          mobile: s.phoneNumber || cleanMobile
+        }
+      });
+    } else {
+      return res.status(400).json({
+        error: verifyResult.error || 'Invalid OTP or verification failed. Please try again.'
+      });
+    }
+  } catch (err) {
+    console.error('[SBTET-OTP-Verify Error]', err);
+    res.status(500).json({ error: 'Server error during OTP verification' });
+  }
+});
+
+// Verify SBTET PIN (Direct Lookup Fallback)
 app.post('/api/auth/verify-pin', async (req, res) => {
   const { pin } = req.body;
   if (!pin || !pin.trim()) {
@@ -265,19 +341,16 @@ app.post('/api/auth/verify-pin', async (req, res) => {
   const cleanPin = pin.trim();
 
   try {
-    // Check if PIN is already registered in users table
     const checkExisting = await pool.query('SELECT id FROM users WHERE LOWER(pin) = LOWER($1)', [cleanPin]);
     if (checkExisting.rows.length > 0) {
       return res.status(400).json({ error: 'An account with this SBTET PIN is already registered. Please log in.' });
     }
 
-    // Live SBTET Scraper Verification
     console.log(`[Verify-PIN] Scraping SBTET details for PIN: ${cleanPin}...`);
     const sbtetResult = await sbtet.getBonafideDetails(cleanPin);
 
     if (sbtetResult.success && sbtetResult.student) {
       const s = sbtetResult.student;
-      console.log(`[Verify-PIN] Verified student: ${s.name} (${s.collegeName})`);
       return res.json({
         success: true,
         student: {
