@@ -1,36 +1,31 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
-// Parse argument or read from env
-const argPin = process.argv[2];
-const devPin = process.env.DEV_PIN || '24054-cps-063';
-const pinToReset = argPin || devPin;
+const pinToReset = process.argv[2] || '24054-cps-063';
 
-console.log(`Initializing database reset for PIN: ${pinToReset}...`);
+console.log(`Clearing user database entry for PIN/Username: ${pinToReset}...`);
 
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
+  user: process.env.DB_USER || 'postgres',
+  host: process.env.DB_HOST || '127.0.0.1',
+  database: process.env.DB_NAME || 'diplomaconnect',
+  password: process.env.DB_PASSWORD || 'postgres',
+  port: parseInt(process.env.DB_PORT || '5432'),
 });
 
-pool.query(
-  `UPDATE users 
-   SET pin = NULL, is_verified = FALSE, student_name = NULL, branch = NULL, college_name = NULL, mobile_number = NULL 
-   WHERE pin = $1`,
-  [pinToReset],
-  (err, res) => {
-    if (err) {
-      console.error('Error executing reset query:', err);
-      process.exit(1);
-    } else {
-      console.log(`Reset successful! Affected rows: ${res.rowCount}`);
-      pool.end(() => {
-        console.log('Database connection closed.');
-        process.exit(0);
-      });
-    }
+async function clearUser() {
+  try {
+    const res = await pool.query(
+      `DELETE FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(pin) = LOWER($1)`,
+      [pinToReset]
+    );
+    console.log(`Successfully deleted user entry! Deleted rows: ${res.rowCount}`);
+  } catch (err) {
+    console.error('Error clearing user database entry:', err);
+  } finally {
+    await pool.end();
+    process.exit(0);
   }
-);
+}
+
+clearUser();

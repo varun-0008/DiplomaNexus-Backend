@@ -255,14 +255,60 @@ async function getUserWithStats(userId) {
 
 // ------------------- AUTH ENDPOINTS -------------------
 
-// Register
+// Verify SBTET PIN (Step 1 of Sign-Up)
+app.post('/api/auth/verify-pin', async (req, res) => {
+  const { pin } = req.body;
+  if (!pin || !pin.trim()) {
+    return res.status(400).json({ error: 'SBTET Roll Number (PIN) is required' });
+  }
+
+  const cleanPin = pin.trim();
+
+  try {
+    // Check if PIN is already registered in users table
+    const checkExisting = await pool.query('SELECT id FROM users WHERE LOWER(pin) = LOWER($1)', [cleanPin]);
+    if (checkExisting.rows.length > 0) {
+      return res.status(400).json({ error: 'An account with this SBTET PIN is already registered. Please log in.' });
+    }
+
+    // Live SBTET Scraper Verification
+    console.log(`[Verify-PIN] Scraping SBTET details for PIN: ${cleanPin}...`);
+    const sbtetResult = await sbtet.getBonafideDetails(cleanPin);
+
+    if (sbtetResult.success && sbtetResult.student) {
+      const s = sbtetResult.student;
+      console.log(`[Verify-PIN] Verified student: ${s.name} (${s.collegeName})`);
+      return res.json({
+        success: true,
+        student: {
+          pin: cleanPin,
+          name: s.name,
+          branch: s.branchName,
+          college: s.collegeName,
+          mobile: s.phoneNumber || ''
+        }
+      });
+    } else {
+      return res.status(400).json({
+        error: sbtetResult.error || 'Unable to verify PIN with SBTET portal. Please verify your Roll Number and try again.'
+      });
+    }
+  } catch (err) {
+    console.error('[Verify-PIN Error]', err);
+    res.status(500).json({ error: 'Server error while contacting SBTET servers' });
+  }
+});
+
+// Register Account (Step 2 of Sign-Up)
 app.post('/api/auth/register', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, pin, student_name, branch, college_name, mobile_number } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
   }
 
   const cleanUsername = username.trim().toLowerCase();
+  const cleanPin = pin ? pin.trim() : null;
+  const isVerified = !!cleanPin; // Instantly verified if registered with SBTET PIN!
 
   try {
     const checkUser = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
@@ -270,12 +316,20 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
+    if (cleanPin) {
+      const checkPin = await pool.query('SELECT * FROM users WHERE pin = $1', [cleanPin]);
+      if (checkPin.rows.length > 0) {
+        return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
+      }
+    }
+
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
     const newUser = await pool.query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username',
-      [cleanUsername, passwordHash]
+      `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
+      [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
     );
 
     const registeredUser = newUser.rows[0];
