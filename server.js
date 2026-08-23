@@ -1622,10 +1622,10 @@ io.on('connection', async (socket) => {
 // --- App Version & Auto-Update Endpoints ---
 app.get('/api/app-version', (req, res) => {
   res.json({
-    latestVersionCode: 2,
-    latestVersionName: '1.1.0',
+    latestVersionCode: 1,
+    latestVersionName: '1.0.0',
     downloadUrl: 'api/app-version/download',
-    releaseNotes: '• Introduced seamless automatic in-app updates\n• Upgraded UI polish and glassmorphism styling\n• Performance optimizations and bug fixes',
+    releaseNotes: 'Initial production release of DiplomaNexus.',
     forceUpdate: false
   });
 });
