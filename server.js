@@ -187,43 +187,60 @@ if (process.env.CLOUDINARY_CLOUD_NAME) {
   });
 }
 
-const redisConnection = new IORedis({ host: '127.0.0.1', port: 6379, maxRetriesPerRequest: null });
-const mediaQueue = new Queue('media-upload', { connection: redisConnection });
+// Optional Redis / BullMQ worker setup (only if REDIS_URL or REDIS_HOST is explicitly configured)
+let mediaQueue = null;
+let redisConnection = null;
 
-const mediaWorker = new Worker('media-upload', async job => {
-  const { postId, base64Data, mediaType } = job.data;
+if (process.env.REDIS_URL || process.env.REDIS_HOST) {
   try {
-    if (process.env.CLOUDINARY_CLOUD_NAME) {
-      const result = await cloudinary.uploader.upload(base64Data, {
-        resource_type: mediaType === 'video' ? 'video' : 'image',
-        eager: mediaType === 'video' ? [{ streaming_profile: "hd", format: "m3u8" }] : []
-      });
-      
-      const mediaUrl = mediaType === 'video' ? 
-        result.secure_url.replace(/\.mp4$/, '.m3u8').replace('/upload/', '/upload/sp_auto/') 
-        : result.secure_url;
-      
-      await pool.query(
-        "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
-        [mediaUrl, postId]
-      );
-    } else {
-      await pool.query(
-        "UPDATE posts SET upload_status = 'ready' WHERE id = $1",
-        [postId]
-      );
-    }
-  } catch (error) {
-    console.error("Media upload error for post " + postId + ":", error);
-    await pool.query(
-      "UPDATE posts SET upload_status = 'failed' WHERE id = $1",
-      [postId]
-    );
-  }
-}, { connection: redisConnection });
+    redisConnection = new IORedis(process.env.REDIS_URL || {
+      host: process.env.REDIS_HOST,
+      port: parseInt(process.env.REDIS_PORT || '6379'),
+      maxRetriesPerRequest: null
+    });
+    
+    redisConnection.on('error', (err) => console.warn('[Redis Warning] Connection error:', err.message));
 
-mediaWorker.on('completed', job => console.log('Job ' + job.id + ' has completed!'));
-mediaWorker.on('failed', (job, err) => console.log('Job ' + job.id + ' has failed with ' + err.message));
+    mediaQueue = new Queue('media-upload', { connection: redisConnection });
+
+    const mediaWorker = new Worker('media-upload', async job => {
+      const { postId, base64Data, mediaType } = job.data;
+      try {
+        if (process.env.CLOUDINARY_CLOUD_NAME) {
+          const result = await cloudinary.uploader.upload(base64Data, {
+            resource_type: mediaType === 'video' ? 'video' : 'image',
+            eager: mediaType === 'video' ? [{ streaming_profile: "hd", format: "m3u8" }] : []
+          });
+          
+          const mediaUrl = mediaType === 'video' ? 
+            result.secure_url.replace(/\.mp4$/, '.m3u8').replace('/upload/', '/upload/sp_auto/') 
+            : result.secure_url;
+          
+          await pool.query(
+            "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
+            [mediaUrl, postId]
+          );
+        } else {
+          await pool.query(
+            "UPDATE posts SET upload_status = 'ready' WHERE id = $1",
+            [postId]
+          );
+        }
+      } catch (error) {
+        console.error("Media upload error for post " + postId + ":", error);
+        await pool.query(
+          "UPDATE posts SET upload_status = 'failed' WHERE id = $1",
+          [postId]
+        );
+      }
+    }, { connection: redisConnection });
+
+    mediaWorker.on('completed', job => console.log('Job ' + job.id + ' has completed!'));
+    mediaWorker.on('failed', (job, err) => console.log('Job ' + job.id + ' has failed with ' + err.message));
+  } catch (e) {
+    console.warn('[Redis] Redis not configured, running without queue worker.');
+  }
+}
 
 // Authentication Middleware
 function authenticateToken(req, res, next) {
