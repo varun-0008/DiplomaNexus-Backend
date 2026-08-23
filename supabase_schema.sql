@@ -1,5 +1,5 @@
 -- ====================================================================
--- DiplomaNexus PostgreSQL Full Database Schema for Supabase
+-- DiplomaNexus Clean Production PostgreSQL Schema (No Mock Data)
 -- ====================================================================
 
 -- 1. USERS TABLE
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS marketplace_listings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 12. MOCK STUDENT DATA TABLE
+-- 12. MOCK STUDENT DATA TABLE (FOR ACADEMIC PIN BINDINGS)
 CREATE TABLE IF NOT EXISTS mock_student_data (
     pin VARCHAR(50) PRIMARY KEY,
     student_name VARCHAR(255) NOT NULL,
@@ -200,28 +200,12 @@ CREATE TABLE IF NOT EXISTS sbtet_cache_meta (
     UNIQUE(college_id, scheme_id, sem_year_id, exam_type_id, branch_id, exam_month_year_id)
 );
 
--- INDEXES FOR HIGH-SPEED SCALABLE QUERIES
+-- HIGH-PERFORMANCE PRODUCTION INDEXES
 CREATE INDEX IF NOT EXISTS idx_sbtet_subject_pin ON sbtet_subject_results(pin);
 CREATE INDEX IF NOT EXISTS idx_sbtet_subject_scheme_sem ON sbtet_subject_results(scheme_code, semester);
 CREATE INDEX IF NOT EXISTS idx_sbtet_summary_pin ON sbtet_student_summary(pin);
 CREATE INDEX IF NOT EXISTS idx_sbtet_cache_college ON sbtet_cache_meta(college_id, scheme_id);
-
--- INITIAL SEED DATA FOR MOCK STUDENT & DEVELOPER TESTING PIN
-INSERT INTO mock_student_data (pin, student_name, branch, college_name, mobile_number, attendance_percentage, sgpa, backlogs) VALUES
-('23001-CM-001', 'Rahul Kumar', 'Computer Engineering', 'Government Polytechnic, Masab Tank', '9876543210', 87, 8.92, 0),
-('23001-CM-002', 'Sneha Reddy', 'Computer Engineering', 'Government Polytechnic, Masab Tank', '9123456789', 74, 7.80, 1),
-('23023-EC-045', 'Karthik Rao', 'Electronics & Communication', 'S.G. Government Polytechnic, Adilabad', '9012345678', 92, 9.15, 0),
-('23084-EE-012', 'Ananya Vyas', 'Electrical & Electronics', 'Government Polytechnic, Warangal', '9898989898', 81, 8.10, 0),
-('23001-ME-102', 'Mohammed Ali', 'Mechanical Engineering', 'Government Polytechnic, Masab Tank', '8765432109', 65, 6.50, 3),
-('24054-cps-063', 'Kompellivarun', 'Cyber Physical Systems and Security', 'Government Polytechnic, Hyderabad', '9999999999', 91, 9.20, 0)
-ON CONFLICT (pin) DO NOTHING;
-
--- SEED SEMESTER RECORDS FOR TEST PIN 24054-cps-063
-INSERT INTO student_semester_data (pin, semester_number, attendance_percentage, sgpa, backlogs) VALUES
-('24054-cps-063', 1, 88, 8.50, 0),
-('24054-cps-063', 2, 92, 8.90, 0),
-('24054-cps-063', 3, 90, 9.10, 0),
-('24054-cps-063', 4, 94, 9.20, 0),
-('24054-cps-063', 5, 91, 9.30, 0),
-('24054-cps-063', 6, 93, 9.50, 0)
-ON CONFLICT (pin, semester_number) DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_pin ON users(pin);
+CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
