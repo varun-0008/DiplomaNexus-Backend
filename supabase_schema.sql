@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS mock_student_data (
 
 -- 13. STUDENT SEMESTER DATA TABLE
 CREATE TABLE IF NOT EXISTS student_semester_data (
-    pin VARCHAR(50) REFERENCES mock_student_data(pin) ON DELETE CASCADE,
+    pin VARCHAR(50) NOT NULL,
     semester_number INTEGER NOT NULL,
     attendance_percentage INTEGER NOT NULL,
     sgpa NUMERIC(4, 2) NOT NULL,
