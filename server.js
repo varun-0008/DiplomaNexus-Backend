@@ -253,6 +253,11 @@ async function getUserWithStats(userId) {
   return result.rows[0];
 }
 
+// Health Check Endpoint (For UptimeRobot Always-On Keepalive)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString(), service: 'DiplomaNexus Backend' });
+});
+
 // ------------------- AUTH ENDPOINTS -------------------
 
 // Send SBTET Mobile OTP (Step 1 of Sign-Up)

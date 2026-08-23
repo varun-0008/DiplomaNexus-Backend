@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: diplomanexus-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DB_HOST
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_NAME
+        value: postgres
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_PORT
+        value: 5432
