@@ -165,49 +165,7 @@ pool.query('SELECT NOW()', (err, res) => {
         if (errMigrate) {
           console.error('Error running database migration:', errMigrate);
         } else {
-          console.log('Database migrations (users, follows, posts, chat tables, academics) checked successfully');
-          try {
-            await pool.query(`
-              INSERT INTO mock_student_data (pin, student_name, branch, college_name, mobile_number, attendance_percentage, sgpa, backlogs) VALUES
-              ('23001-CM-001', 'Rahul Kumar', 'Computer Engineering', 'Government Polytechnic, Masab Tank', '9876543210', 87, 8.92, 0),
-              ('23001-CM-002', 'Sneha Reddy', 'Computer Engineering', 'Government Polytechnic, Masab Tank', '9123456789', 74, 7.80, 1),
-              ('23023-EC-045', 'Karthik Rao', 'Electronics & Communication', 'S.G. Government Polytechnic, Adilabad', '9012345678', 92, 9.15, 0),
-              ('23084-EE-012', 'Ananya Vyas', 'Electrical & Electronics', 'Government Polytechnic, Warangal', '9898989898', 81, 8.10, 0),
-              ('23001-ME-102', 'Mohammed Ali', 'Mechanical Engineering', 'Government Polytechnic, Masab Tank', '8765432109', 65, 6.50, 3),
-              ('24054-cps-063', 'Developer', 'Cyber Physical Systems and Security', 'Government Polytechnic, Hyderabad', '9999999999', 91, 9.20, 0)
-              ON CONFLICT (pin) DO NOTHING;
-            `);
-            const semDataCount = await pool.query('SELECT COUNT(*) FROM student_semester_data');
-            if (parseInt(semDataCount.rows[0].count) === 0) {
-              console.log('Seeding student_semester_data table...');
-              await pool.query(`
-                INSERT INTO student_semester_data (pin, semester_number, attendance_percentage, sgpa, backlogs) VALUES
-                ('24054-cps-063', 1, 88, 8.50, 0),
-                ('24054-cps-063', 2, 92, 8.90, 0),
-                ('24054-cps-063', 3, 90, 9.10, 0),
-                ('24054-cps-063', 4, 94, 9.20, 0),
-                ('24054-cps-063', 5, 91, 9.30, 0),
-                ('24054-cps-063', 6, 93, 9.50, 0),
-                
-                ('23001-CM-001', 1, 85, 8.20, 0),
-                ('23001-CM-001', 2, 86, 8.40, 0),
-                ('23001-CM-001', 3, 89, 8.70, 0),
-                ('23001-CM-001', 4, 88, 8.92, 0),
-                ('23001-CM-001', 5, 90, 9.10, 0),
-                ('23001-CM-001', 6, 91, 9.30, 0),
-                
-                ('23001-CM-002', 1, 75, 7.20, 1),
-                ('23001-CM-002', 2, 78, 7.50, 0),
-                ('23001-CM-002', 3, 72, 7.10, 2),
-                ('23001-CM-002', 4, 80, 7.80, 0),
-                ('23001-CM-002', 5, 76, 7.40, 1),
-                ('23001-CM-002', 6, 79, 7.90, 0);
-              `);
-              console.log('Successfully seeded student_semester_data');
-            }
-          } catch (errSem) {
-            console.error('Error seeding student_semester_data:', errSem);
-          }
+          console.log('Database schema migrations checked successfully');
         }
       }
     );
