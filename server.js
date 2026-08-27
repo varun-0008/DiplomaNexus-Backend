@@ -1152,16 +1152,30 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
 
 // ------------------- MARKETPLACE ENDPOINTS -------------------
 
-// Get all marketplace listings (includes author details)
+// Get all marketplace listings across all polytechnic colleges (supports college filtering)
 app.get('/api/marketplace', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT m.id, m.user_id, m.title, m.description, m.price, m.category, m.status, m.image_base64, m.listing_type, m.created_at,
-              u.username, u.student_name, u.is_verified, u.profile_pic_base64
-       FROM marketplace_listings m
-       JOIN users u ON m.user_id = u.id
-       ORDER BY m.created_at DESC`
-    );
+    const { college } = req.query;
+    let query, params;
+
+    if (college && college.trim() !== '') {
+      query = `SELECT m.id, m.user_id, m.title, m.description, m.price, m.category, m.status, m.image_base64, m.listing_type, m.created_at,
+                      u.username, u.student_name, u.college_name, u.branch, u.is_verified, u.profile_pic_base64
+               FROM marketplace_listings m
+               JOIN users u ON m.user_id = u.id
+               WHERE u.college_name ILIKE $1
+               ORDER BY m.created_at DESC`;
+      params = [`%${college.trim()}%`];
+    } else {
+      query = `SELECT m.id, m.user_id, m.title, m.description, m.price, m.category, m.status, m.image_base64, m.listing_type, m.created_at,
+                      u.username, u.student_name, u.college_name, u.branch, u.is_verified, u.profile_pic_base64
+               FROM marketplace_listings m
+               JOIN users u ON m.user_id = u.id
+               ORDER BY m.created_at DESC`;
+      params = [];
+    }
+
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -1186,7 +1200,7 @@ app.post('/api/marketplace', authenticateToken, async (req, res) => {
     // Fetch details with user info
     const details = await pool.query(
       `SELECT m.id, m.user_id, m.title, m.description, m.price, m.category, m.status, m.image_base64, m.listing_type, m.created_at,
-              u.username, u.student_name, u.is_verified, u.profile_pic_base64
+              u.username, u.student_name, u.college_name, u.branch, u.is_verified, u.profile_pic_base64
        FROM marketplace_listings m
        JOIN users u ON m.user_id = u.id
        WHERE m.id = $1`,
@@ -1225,7 +1239,7 @@ app.put('/api/marketplace/:id/status', authenticateToken, async (req, res) => {
     
     const details = await pool.query(
       `SELECT m.id, m.user_id, m.title, m.description, m.price, m.category, m.status, m.image_base64, m.listing_type, m.created_at,
-              u.username, u.student_name, u.is_verified, u.profile_pic_base64
+              u.username, u.student_name, u.college_name, u.branch, u.is_verified, u.profile_pic_base64
        FROM marketplace_listings m
        JOIN users u ON m.user_id = u.id
        WHERE m.id = $1`,
