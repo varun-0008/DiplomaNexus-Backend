@@ -207,5 +207,6 @@ CREATE INDEX IF NOT EXISTS idx_sbtet_summary_pin ON sbtet_student_summary(pin);
 CREATE INDEX IF NOT EXISTS idx_sbtet_cache_college ON sbtet_cache_meta(college_id, scheme_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_pin ON users(pin);
+CREATE INDEX IF NOT EXISTS idx_users_college ON users(college_name);
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
