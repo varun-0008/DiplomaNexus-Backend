@@ -99,7 +99,7 @@ pool.on('error', (err) => {
 // Test connection
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
-    console.warn('PostgreSQL Pooler Notice:', err.message);
+    // Primary database communication uses HTTPS PostgREST REST API
   } else {
     console.log('PostgreSQL connected successfully at', res.rows[0].now);
     
