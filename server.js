@@ -25,19 +25,41 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/updates', express.static(path.join(__dirname, 'updates')));
 
 // PostgreSQL Pool Connection
-const poolConfig = process.env.DATABASE_URL
-  ? {
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+let poolConfig;
+
+if (process.env.DATABASE_URL) {
+  let connStr = process.env.DATABASE_URL;
+  // Convert direct IPv6 connection (db.<ref>.supabase.co:5432) to IPv4 pooler (port 6543) for Render compatibility
+  if (connStr.includes('.supabase.co:5432') || connStr.includes('db.')) {
+    const match = connStr.match(/postgresql:\/\/([^:]+):([^@]+)@db\.([^.]+)\.supabase\.co:5432\/(.+)/);
+    if (match) {
+      const [, dbUser, dbPass, projectRef, dbName] = match;
+      connStr = `postgresql://${dbUser}.${projectRef}:${dbPass}@aws-0-ap-south-1.pooler.supabase.com:6543/${dbName}`;
     }
-  : {
-      user: process.env.DB_USER || 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      database: process.env.DB_NAME || 'postgres',
-      password: process.env.DB_PASSWORD || 'DiplomaNexus2026',
-      port: process.env.DB_PORT || 5432,
-      ssl: { rejectUnauthorized: false }
-    };
+  }
+  poolConfig = {
+    connectionString: connStr,
+    ssl: connStr.includes('localhost') ? false : { rejectUnauthorized: false }
+  };
+} else {
+  const host = process.env.DB_HOST && !process.env.DB_HOST.includes('supabase.co') 
+    ? process.env.DB_HOST 
+    : 'aws-0-ap-south-1.pooler.supabase.com';
+  const port = process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 6543;
+  const rawUser = process.env.DB_USER || 'postgres';
+  const user = (host.includes('pooler.supabase.com') && !rawUser.includes('.')) 
+    ? `${rawUser}.ylwtmwyfctqghrmawghw` 
+    : rawUser;
+
+  poolConfig = {
+    user,
+    host,
+    database: process.env.DB_NAME || 'postgres',
+    password: process.env.DB_PASSWORD || 'DiplomaNexus2026',
+    port,
+    ssl: host === 'localhost' ? false : { rejectUnauthorized: false }
+  };
+}
 
 const pool = new Pool(poolConfig);
 
