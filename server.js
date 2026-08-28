@@ -7,8 +7,14 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const sbtet = require('./sbtetFetcher');
+const { createClient } = require('@supabase/supabase-js');
 
 const path = require('path');
+
+// Supabase Client Setup (REST API for sgdsiakxpmgfrbfkztsf)
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -280,16 +286,52 @@ function authenticateToken(req, res, next) {
 
 // Helper to retrieve user details along with real follower, following, and friend counts
 async function getUserWithStats(userId) {
-  const result = await pool.query(
-    `SELECT u.id, u.username, u.pin, u.student_name, u.branch, u.college_name, u.mobile_number, u.is_verified, u.about_me, u.profile_pic_base64, COALESCE(u.subscription_tier, 'free') as subscription_tier, u.created_at,
-            COALESCE((SELECT COUNT(*)::integer FROM follows WHERE following_id = u.id), 0) as followers_count,
-            COALESCE((SELECT COUNT(*)::integer FROM follows WHERE follower_id = u.id), 0) as following_count,
-            COALESCE((SELECT COUNT(*)::integer FROM follows f1 JOIN follows f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id WHERE f1.follower_id = u.id), 0) as friends_count
-     FROM users u
-     WHERE u.id = $1`,
-    [userId]
-  );
-  return result.rows[0];
+  try {
+    const { data: userRows } = await supabase
+      .from('users')
+      .select('id, username, pin, student_name, branch, college_name, mobile_number, is_verified, about_me, profile_pic_base64, subscription_tier, created_at')
+      .eq('id', userId);
+
+    if (userRows && userRows.length > 0) {
+      const u = userRows[0];
+      const { count: followersCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('following_id', userId);
+
+      const { count: followingCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('follower_id', userId);
+
+      return {
+        ...u,
+        subscription_tier: u.subscription_tier || 'free',
+        followers_count: followersCount || 0,
+        following_count: followingCount || 0,
+        friends_count: 0,
+        is_following: false
+      };
+    }
+  } catch (e) {
+    console.error('[getUserWithStats SDK error]', e.message);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.username, u.pin, u.student_name, u.branch, u.college_name, u.mobile_number, u.is_verified, u.about_me, u.profile_pic_base64, COALESCE(u.subscription_tier, 'free') as subscription_tier, u.created_at,
+              COALESCE((SELECT COUNT(*)::integer FROM follows WHERE following_id = u.id), 0) as followers_count,
+              COALESCE((SELECT COUNT(*)::integer FROM follows WHERE follower_id = u.id), 0) as following_count,
+              COALESCE((SELECT COUNT(*)::integer FROM follows f1 JOIN follows f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id WHERE f1.follower_id = u.id), 0) as friends_count
+       FROM users u
+       WHERE u.id = $1`,
+      [userId]
+    );
+    return result.rows[0];
+  } catch (err) {
+    console.error('[getUserWithStats PG error]', err.message);
+    return null;
+  }
 }
 
 // Health Check Endpoint (For UptimeRobot Always-On Keepalive)
@@ -466,14 +508,22 @@ app.post('/api/auth/register', async (req, res) => {
   const isVerified = !!cleanPin; // Instantly verified if registered with SBTET PIN!
 
   try {
-    const checkUser = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
-    if (checkUser.rows.length > 0) {
+    // 1. Check existing user in Supabase
+    const { data: checkUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', cleanUsername);
+
+    if (checkUser && checkUser.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
     if (cleanPin) {
-      const checkPin = await pool.query('SELECT * FROM users WHERE pin = $1', [cleanPin]);
-      if (checkPin.rows.length > 0) {
+      const { data: checkPin } = await supabase
+        .from('users')
+        .select('id')
+        .eq('pin', cleanPin);
+      if (checkPin && checkPin.length > 0) {
         return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
       }
     }
@@ -481,19 +531,44 @@ app.post('/api/auth/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    const newUser = await pool.query(
-      `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
-      [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
-    );
+    // 2. Insert user into Supabase users table
+    const { data: insertedUsers, error: insertErr } = await supabase
+      .from('users')
+      .insert([
+        {
+          username: cleanUsername,
+          password_hash: passwordHash,
+          pin: cleanPin,
+          student_name: student_name || null,
+          branch: branch || null,
+          college_name: college_name || null,
+          mobile_number: mobile_number || null,
+          is_verified: isVerified,
+          subscription_tier: 'Free'
+        }
+      ])
+      .select('id, username');
 
-    const registeredUser = newUser.rows[0];
+    let registeredUser = insertedUsers && insertedUsers.length > 0 ? insertedUsers[0] : null;
+
+    if (!registeredUser) {
+      if (insertErr) console.error('[Supabase Register Error]', insertErr.message);
+
+      // Fallback to PostgreSQL pool query
+      const newUserPg = await pool.query(
+        `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
+        [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
+      );
+      registeredUser = newUserPg.rows[0];
+    }
+
     const token = jwt.sign({ id: registeredUser.id, username: registeredUser.username }, JWT_SECRET, { expiresIn: '30d' });
     const user = await getUserWithStats(registeredUser.id);
 
     res.status(201).json({ token, user });
   } catch (err) {
-    console.error(err);
+    console.error('[Register Error]', err);
     res.status(500).json({ error: 'Server error during registration' });
   }
 });
@@ -508,26 +583,40 @@ app.post('/api/auth/login', async (req, res) => {
   const cleanUsername = username.trim().toLowerCase();
 
   try {
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
-    if (result.rows.length === 0) {
+    // 1. Try Supabase SDK first
+    const { data: users } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', cleanUsername);
+
+    let user = users && users.length > 0 ? users[0] : null;
+
+    if (!user) {
+      // Fallback to PostgreSQL pool query
+      const result = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
+      if (result.rows.length > 0) {
+        user = result.rows[0];
+      }
+    }
+
+    if (!user) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
 
-    const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
 
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
-
     const userWithStats = await getUserWithStats(user.id);
+
     res.json({
       token,
-      user: userWithStats
+      user: userWithStats || user
     });
   } catch (err) {
-    console.error(err);
+    console.error('[Login Error]', err);
     res.status(500).json({ error: 'Server error during login' });
   }
 });
