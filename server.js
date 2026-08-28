@@ -65,6 +65,9 @@ if (process.env.DATABASE_URL) {
 }
 
 const pool = new Pool(poolConfig);
+pool.on('error', (err) => {
+  console.warn('[PostgreSQL Pool Background Warning]', err.message);
+});
 
 // Test connection
 pool.query('SELECT NOW()', (err, res) => {
