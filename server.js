@@ -281,7 +281,7 @@ function authenticateToken(req, res, next) {
 // Helper to retrieve user details along with real follower, following, and friend counts
 async function getUserWithStats(userId) {
   const result = await pool.query(
-    `SELECT u.id, u.username, u.pin, u.student_name, u.branch, u.college_name, u.mobile_number, u.is_verified, u.about_me, u.profile_pic_base64, u.subscription_tier, u.created_at,
+    `SELECT u.id, u.username, u.pin, u.student_name, u.branch, u.college_name, u.mobile_number, u.is_verified, u.about_me, u.profile_pic_base64, COALESCE(u.subscription_tier, 'free') as subscription_tier, u.created_at,
             COALESCE((SELECT COUNT(*)::integer FROM follows WHERE following_id = u.id), 0) as followers_count,
             COALESCE((SELECT COUNT(*)::integer FROM follows WHERE follower_id = u.id), 0) as following_count,
             COALESCE((SELECT COUNT(*)::integer FROM follows f1 JOIN follows f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id WHERE f1.follower_id = u.id), 0) as friends_count
