@@ -66,7 +66,7 @@ const pool = new Pool(poolConfig);
 // Test connection
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
-    console.error('Error connecting to PostgreSQL:', err);
+    console.warn('PostgreSQL Pooler Notice:', err.message);
   } else {
     console.log('PostgreSQL connected successfully at', res.rows[0].now);
     
@@ -90,63 +90,57 @@ pool.query('SELECT NOW()', (err, res) => {
          type VARCHAR(20) DEFAULT 'direct',
          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
        );
-       CREATE TABLE IF NOT EXISTS chat_room_participants (
+       CREATE TABLE IF NOT EXISTS chat_room_members (
          room_id INTEGER REFERENCES chat_rooms(id) ON DELETE CASCADE,
          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+         joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
          PRIMARY KEY (room_id, user_id)
        );
-       CREATE TABLE IF NOT EXISTS messages (
+       CREATE TABLE IF NOT EXISTS chat_messages (
          id SERIAL PRIMARY KEY,
          room_id INTEGER REFERENCES chat_rooms(id) ON DELETE CASCADE,
          sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
          message_type VARCHAR(20) DEFAULT 'text',
          text_content TEXT,
          media_url TEXT,
-         is_read BOOLEAN DEFAULT FALSE,
+         is_read BOOLEAN DEFAULT false,
          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
        );
-       CREATE TABLE IF NOT EXISTS student_semester_data (
-         pin VARCHAR(50) REFERENCES mock_student_data(pin) ON DELETE CASCADE,
-         semester_number INTEGER NOT NULL,
-         attendance_percentage INTEGER NOT NULL,
-         sgpa NUMERIC(4, 2) NOT NULL,
-         backlogs INTEGER DEFAULT 0,
-         PRIMARY KEY (pin, semester_number)
-       );
-       CREATE TABLE IF NOT EXISTS sbtet_subject_results (
+       CREATE TABLE IF NOT EXISTS blogs (
          id SERIAL PRIMARY KEY,
-         pin VARCHAR(50) NOT NULL,
-         branch_code VARCHAR(10),
-         subject_code VARCHAR(30),
-         subject_name TEXT,
-         hybrid_grade VARCHAR(5),
-         scheme_code VARCHAR(10),
-         semester VARCHAR(10),
-         mid1_marks VARCHAR(10),
-         mid2_marks VARCHAR(10),
-         internal_marks VARCHAR(10),
-         end_sem_marks VARCHAR(10),
-         subject_total VARCHAR(10),
-         exam_type VARCHAR(30),
-         college_code VARCHAR(10),
-         college_name TEXT,
-         exam_month_year VARCHAR(30),
-         exam_month_year_id INTEGER,
-         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-         UNIQUE(pin, subject_code, scheme_code, semester, exam_month_year_id)
+         author_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+         title TEXT NOT NULL,
+         content TEXT NOT NULL,
+         cover_image_base64 TEXT,
+         category VARCHAR(50) DEFAULT 'General',
+         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
        );
        CREATE TABLE IF NOT EXISTS sbtet_student_summary (
          id SERIAL PRIMARY KEY,
-         pin VARCHAR(50) NOT NULL,
-         student_name TEXT,
-         semester VARCHAR(10),
-         total_marks NUMERIC(8, 2),
-         total_credits VARCHAR(10),
-         sgpa VARCHAR(10),
-         cgpa VARCHAR(10),
-         sem_exam_status VARCHAR(30),
-         total_grade_points VARCHAR(10),
+         pin VARCHAR(30) NOT NULL UNIQUE,
+         student_name VARCHAR(200),
+         college_code VARCHAR(10),
+         college_name VARCHAR(300),
+         branch_code VARCHAR(20),
          scheme_code VARCHAR(10),
+         total_gpa NUMERIC(4,2),
+         total_credits NUMERIC(5,1),
+         result_status VARCHAR(50),
+         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+       );
+       CREATE TABLE IF NOT EXISTS sbtet_subject_results (
+         id SERIAL PRIMARY KEY,
+         pin VARCHAR(30) NOT NULL,
+         subject_code VARCHAR(30),
+         subject_name VARCHAR(200),
+         internal_marks INTEGER,
+         external_marks INTEGER,
+         total_marks INTEGER,
+         grade VARCHAR(10),
+         credits NUMERIC(3,1),
+         semester INTEGER,
+         scheme_code VARCHAR(10),
+         exam_type VARCHAR(50),
          exam_month_year VARCHAR(30),
          exam_month_year_id INTEGER,
          fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -199,8 +193,6 @@ pool.query('SELECT NOW()', (err, res) => {
         }
       }
     );
-
-
   }
 });
 
