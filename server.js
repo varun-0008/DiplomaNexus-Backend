@@ -511,52 +511,66 @@ app.post('/api/auth/register', async (req, res) => {
   const isVerified = !!cleanPin; // Instantly verified if registered with SBTET PIN!
 
   try {
-    // 1. Check existing user in Supabase
-    const { data: checkUser } = await supabase
-      .from('users')
-      .select('id')
-      .eq('username', cleanUsername);
+    let checkUser = null;
+    let checkPin = null;
+
+    if (supabase) {
+      const resUser = await supabase.from('users').select('id').eq('username', cleanUsername);
+      checkUser = resUser.data;
+
+      if (cleanPin) {
+        const resPin = await supabase.from('users').select('id').eq('pin', cleanPin);
+        checkPin = resPin.data;
+      }
+    } else {
+      const checkUserPg = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
+      if (checkUserPg.rows.length > 0) checkUser = checkUserPg.rows;
+
+      if (cleanPin) {
+        const checkPinPg = await pool.query('SELECT * FROM users WHERE pin = $1', [cleanPin]);
+        if (checkPinPg.rows.length > 0) checkPin = checkPinPg.rows;
+      }
+    }
 
     if (checkUser && checkUser.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    if (cleanPin) {
-      const { data: checkPin } = await supabase
-        .from('users')
-        .select('id')
-        .eq('pin', cleanPin);
-      if (checkPin && checkPin.length > 0) {
-        return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
-      }
+    if (checkPin && checkPin.length > 0) {
+      return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
     }
 
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    // 2. Insert user into Supabase users table
-    const { data: insertedUsers, error: insertErr } = await supabase
-      .from('users')
-      .insert([
-        {
-          username: cleanUsername,
-          password_hash: passwordHash,
-          pin: cleanPin,
-          student_name: student_name || null,
-          branch: branch || null,
-          college_name: college_name || null,
-          mobile_number: mobile_number || null,
-          is_verified: isVerified,
-          subscription_tier: 'Free'
-        }
-      ])
-      .select('id, username');
+    let registeredUser = null;
 
-    let registeredUser = insertedUsers && insertedUsers.length > 0 ? insertedUsers[0] : null;
+    if (supabase) {
+      const { data: insertedUsers, error: insertErr } = await supabase
+        .from('users')
+        .insert([
+          {
+            username: cleanUsername,
+            password_hash: passwordHash,
+            pin: cleanPin,
+            student_name: student_name || null,
+            branch: branch || null,
+            college_name: college_name || null,
+            mobile_number: mobile_number || null,
+            is_verified: isVerified,
+            subscription_tier: 'Free'
+          }
+        ])
+        .select('id, username');
+
+      if (insertedUsers && insertedUsers.length > 0) {
+        registeredUser = insertedUsers[0];
+      } else if (insertErr) {
+        console.error('[Supabase Register Insert Error]', insertErr.message);
+      }
+    }
 
     if (!registeredUser) {
-      if (insertErr) console.error('[Supabase Register Error]', insertErr.message);
-
       // Fallback to PostgreSQL pool query
       const newUserPg = await pool.query(
         `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
@@ -586,13 +600,16 @@ app.post('/api/auth/login', async (req, res) => {
   const cleanUsername = username.trim().toLowerCase();
 
   try {
-    // 1. Try Supabase SDK first
-    const { data: users } = await supabase
-      .from('users')
-      .select('*')
-      .eq('username', cleanUsername);
+    let user = null;
 
-    let user = users && users.length > 0 ? users[0] : null;
+    if (supabase) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('*')
+        .eq('username', cleanUsername);
+
+      if (users && users.length > 0) user = users[0];
+    }
 
     if (!user) {
       // Fallback to PostgreSQL pool query
