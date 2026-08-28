@@ -580,7 +580,7 @@ app.post('/api/auth/register', async (req, res) => {
     res.status(201).json({ token, user });
   } catch (err) {
     console.error('[Register Error]', err);
-    res.status(500).json({ error: err.message || 'Server error during registration' });
+    res.status(500).json({ error: err.stack || err.message || String(err) });
   }
 });
 
