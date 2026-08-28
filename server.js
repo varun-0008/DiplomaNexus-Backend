@@ -11,10 +11,12 @@ const sbtet = require('./sbtetFetcher');
 let supabase = null;
 try {
   const { createClient } = require('@supabase/supabase-js');
-  const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
+  const SUPABASE_URL = (process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('ylwtmwyfctqghrmawghw'))
+    ? process.env.SUPABASE_URL
+    : 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
   const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log('[Supabase SDK] Client initialized successfully for project sgdsiakxpmgfrbfkztsf');
+  console.log('[Supabase SDK] Client initialized successfully for project:', SUPABASE_URL);
 } catch (e) {
   console.warn('[Supabase SDK Notice] SDK initialization warning:', e.message);
 }
