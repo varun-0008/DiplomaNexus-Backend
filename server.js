@@ -7,14 +7,17 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const sbtet = require('./sbtetFetcher');
-const { createClient } = require('@supabase/supabase-js');
-
-const path = require('path');
-
 // Supabase Client Setup (REST API for sgdsiakxpmgfrbfkztsf)
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+let supabase = null;
+try {
+  const { createClient } = require('@supabase/supabase-js');
+  const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
+  const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
+  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  console.log('[Supabase SDK] Client initialized successfully for project sgdsiakxpmgfrbfkztsf');
+} catch (e) {
+  console.warn('[Supabase SDK Notice] SDK initialization warning:', e.message);
+}
 
 const app = express();
 const httpServer = http.createServer(app);
