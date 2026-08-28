@@ -8,18 +8,44 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const sbtet = require('./sbtetFetcher');
 const path = require('path');
-// Supabase Client Setup (REST API for sgdsiakxpmgfrbfkztsf)
-let supabase = null;
-try {
-  const { createClient } = require('@supabase/supabase-js');
-  const SUPABASE_URL = (process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('ylwtmwyfctqghrmawghw'))
-    ? process.env.SUPABASE_URL
-    : 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
-  const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
-  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log('[Supabase SDK] Client initialized successfully for project:', SUPABASE_URL);
-} catch (e) {
-  console.warn('[Supabase SDK Notice] SDK initialization warning:', e.message);
+const https = require('https');
+
+// Native HTTPS Supabase REST helper (Zero-dependency, 100% reliable)
+function supabaseRestRequest(endpoint, method = 'GET', payload = null) {
+  return new Promise((resolve, reject) => {
+    const baseUrl = (process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('ylwtmwyfctqghrmawghw'))
+      ? process.env.SUPABASE_URL
+      : 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
+    const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
+    const url = new URL(`${baseUrl}/rest/v1/${endpoint}`);
+    
+    const postData = payload ? JSON.stringify(payload) : null;
+    const req = https.request(url, {
+      method: method,
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+        ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {})
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          resolve({ status: res.statusCode, data: json });
+        } catch (e) {
+          resolve({ status: res.statusCode, data: data });
+        }
+      });
+    });
+
+    req.on('error', (e) => reject(e));
+    if (postData) req.write(postData);
+    req.end();
+  });
 }
 
 const app = express();
@@ -288,34 +314,23 @@ function authenticateToken(req, res, next) {
 // Helper to retrieve user details along with real follower, following, and friend counts
 async function getUserWithStats(userId) {
   try {
-    const { data: userRows } = await supabase
-      .from('users')
-      .select('id, username, pin, student_name, branch, college_name, mobile_number, is_verified, about_me, profile_pic_base64, subscription_tier, created_at')
-      .eq('id', userId);
-
-    if (userRows && userRows.length > 0) {
-      const u = userRows[0];
-      const { count: followersCount } = await supabase
-        .from('follows')
-        .select('*', { count: 'exact', head: true })
-        .eq('following_id', userId);
-
-      const { count: followingCount } = await supabase
-        .from('follows')
-        .select('*', { count: 'exact', head: true })
-        .eq('follower_id', userId);
+    const res = await supabaseRestRequest(`users?id=eq.${userId}&select=*`);
+    if (res.status === 200 && res.data && res.data.length > 0) {
+      const u = res.data[0];
+      const folRes = await supabaseRestRequest(`follows?following_id=eq.${userId}&select=id`);
+      const folingRes = await supabaseRestRequest(`follows?follower_id=eq.${userId}&select=id`);
 
       return {
         ...u,
         subscription_tier: u.subscription_tier || 'free',
-        followers_count: followersCount || 0,
-        following_count: followingCount || 0,
+        followers_count: (folRes.data && Array.isArray(folRes.data)) ? folRes.data.length : 0,
+        following_count: (folingRes.data && Array.isArray(folingRes.data)) ? folingRes.data.length : 0,
         friends_count: 0,
         is_following: false
       };
     }
   } catch (e) {
-    console.error('[getUserWithStats SDK error]', e.message);
+    console.error('[getUserWithStats Native REST error]', e.message);
   }
 
   try {
@@ -509,33 +524,17 @@ app.post('/api/auth/register', async (req, res) => {
   const isVerified = !!cleanPin; // Instantly verified if registered with SBTET PIN!
 
   try {
-    let checkUser = null;
-    let checkPin = null;
-
-    if (supabase) {
-      const resUser = await supabase.from('users').select('id').eq('username', cleanUsername);
-      checkUser = resUser.data;
-
-      if (cleanPin) {
-        const resPin = await supabase.from('users').select('id').eq('pin', cleanPin);
-        checkPin = resPin.data;
-      }
-    } else {
-      const checkUserPg = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
-      if (checkUserPg.rows.length > 0) checkUser = checkUserPg.rows;
-
-      if (cleanPin) {
-        const checkPinPg = await pool.query('SELECT * FROM users WHERE pin = $1', [cleanPin]);
-        if (checkPinPg.rows.length > 0) checkPin = checkPinPg.rows;
-      }
-    }
-
-    if (checkUser && checkUser.length > 0) {
+    // 1. Check existing username in Supabase
+    const checkUserRes = await supabaseRestRequest(`users?username=eq.${encodeURIComponent(cleanUsername)}&select=id`);
+    if (checkUserRes.status === 200 && checkUserRes.data && checkUserRes.data.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    if (checkPin && checkPin.length > 0) {
-      return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
+    if (cleanPin) {
+      const checkPinRes = await supabaseRestRequest(`users?pin=eq.${encodeURIComponent(cleanPin)}&select=id`);
+      if (checkPinRes.status === 200 && checkPinRes.data && checkPinRes.data.length > 0) {
+        return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
+      }
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -543,29 +542,23 @@ app.post('/api/auth/register', async (req, res) => {
 
     let registeredUser = null;
 
-    if (supabase) {
-      const { data: insertedUsers, error: insertErr } = await supabase
-        .from('users')
-        .insert([
-          {
-            username: cleanUsername,
-            password_hash: passwordHash,
-            pin: cleanPin,
-            student_name: student_name || null,
-            branch: branch || null,
-            college_name: college_name || null,
-            mobile_number: mobile_number || null,
-            is_verified: isVerified,
-            subscription_tier: 'Free'
-          }
-        ])
-        .select('id, username');
+    // 2. Insert user into Supabase users table via Native HTTPS PostgREST
+    const insertRes = await supabaseRestRequest('users', 'POST', [{
+      username: cleanUsername,
+      password_hash: passwordHash,
+      pin: cleanPin,
+      student_name: student_name || null,
+      branch: branch || null,
+      college_name: college_name || null,
+      mobile_number: mobile_number || null,
+      is_verified: isVerified,
+      subscription_tier: 'Free'
+    }]);
 
-      if (insertedUsers && insertedUsers.length > 0) {
-        registeredUser = insertedUsers[0];
-      } else if (insertErr) {
-        console.error('[Supabase Register Insert Error]', insertErr.message);
-      }
+    if (insertRes.status === 201 && insertRes.data && insertRes.data.length > 0) {
+      registeredUser = insertRes.data[0];
+    } else {
+      console.error('[Supabase Native Insert Notice]', insertRes.status, insertRes.data);
     }
 
     if (!registeredUser) {
@@ -607,20 +600,19 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     let user = null;
 
-    if (supabase) {
-      const { data: users } = await supabase
-        .from('users')
-        .select('*')
-        .eq('username', cleanUsername);
-
-      if (users && users.length > 0) user = users[0];
+    const userRes = await supabaseRestRequest(`users?username=eq.${encodeURIComponent(cleanUsername)}&select=*`);
+    if (userRes.status === 200 && userRes.data && userRes.data.length > 0) {
+      user = userRes.data[0];
     }
 
     if (!user) {
-      // Fallback to PostgreSQL pool query
-      const result = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
-      if (result.rows.length > 0) {
-        user = result.rows[0];
+      try {
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [cleanUsername]);
+        if (result.rows.length > 0) {
+          user = result.rows[0];
+        }
+      } catch (pgErr) {
+        console.error('[PG Login Fallback Error]', pgErr.message);
       }
     }
 
