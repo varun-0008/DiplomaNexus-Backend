@@ -7,6 +7,7 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const sbtet = require('./sbtetFetcher');
+const path = require('path');
 // Supabase Client Setup (REST API for sgdsiakxpmgfrbfkztsf)
 let supabase = null;
 try {
