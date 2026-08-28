@@ -25,13 +25,21 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/updates', express.static(path.join(__dirname, 'updates')));
 
 // PostgreSQL Pool Connection
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
-});
+const poolConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+    }
+  : {
+      user: process.env.DB_USER || 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      database: process.env.DB_NAME || 'postgres',
+      password: process.env.DB_PASSWORD || 'DiplomaNexus2026',
+      port: process.env.DB_PORT || 5432,
+      ssl: { rejectUnauthorized: false }
+    };
+
+const pool = new Pool(poolConfig);
 
 // Test connection
 pool.query('SELECT NOW()', (err, res) => {
