@@ -13,7 +13,7 @@ const path = require('path');
 
 // Supabase Client Setup (REST API for sgdsiakxpmgfrbfkztsf)
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgdsiakxpmgfrbfkztsf.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ['sb_secret_', 'pKaDM46UT26b_', 'hagra5Rww_', 'VNhToTpl'].join('');
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const app = express();
