@@ -565,13 +565,20 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     if (!registeredUser) {
-      // Fallback to PostgreSQL pool query
-      const newUserPg = await pool.query(
-        `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
-        [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
-      );
-      registeredUser = newUserPg.rows[0];
+      try {
+        const newUserPg = await pool.query(
+          `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
+          [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
+        );
+        registeredUser = newUserPg.rows[0];
+      } catch (pgErr) {
+        console.error('[PG Register Error]', pgErr.message);
+      }
+    }
+
+    if (!registeredUser) {
+      return res.status(500).json({ error: 'Failed to create user account. Please try again.' });
     }
 
     const token = jwt.sign({ id: registeredUser.id, username: registeredUser.username }, JWT_SECRET, { expiresIn: '30d' });
