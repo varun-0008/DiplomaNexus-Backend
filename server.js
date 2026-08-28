@@ -398,10 +398,6 @@ app.post('/api/auth/verify-sbtet-otp', async (req, res) => {
     res.status(500).json({ error: 'Server error while verifying SBTET OTP' });
   }
 });
-    console.error('[SBTET-OTP-Verify Error]', err);
-    res.status(500).json({ error: 'Server error during OTP verification' });
-  }
-});
 
 // Verify SBTET PIN (Direct Lookup Fallback)
 app.post('/api/auth/verify-pin', async (req, res) => {
