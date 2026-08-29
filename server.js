@@ -1219,6 +1219,9 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
     if (postsRes.status === 200 && Array.isArray(postsRes.data)) {
       const formattedPosts = postsRes.data.map(p => {
         const author = p.users || {};
+        const displayName = (author.student_name && author.student_name !== 'Verified Student')
+          ? author.student_name
+          : (author.username || 'Student');
         return {
           id: p.id,
           content: p.content,
@@ -1228,7 +1231,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
           upload_status: p.upload_status || 'ready',
           created_at: p.created_at,
           username: author.username || 'student',
-          student_name: author.student_name || author.username || 'Student',
+          student_name: displayName,
           is_verified: author.is_verified || false,
           profile_pic_base64: author.profile_pic_base64 || null,
           branch: author.branch || null,
@@ -1255,10 +1258,16 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
       [req.user.id]
     );
 
-    const posts = postsQuery.rows;
-    for (let i = 0; i < posts.length; i++) {
-      posts[i].comments = [];
-    }
+    const posts = postsQuery.rows.map(p => {
+      const displayName = (p.student_name && p.student_name !== 'Verified Student')
+        ? p.student_name
+        : p.username;
+      return {
+        ...p,
+        student_name: displayName,
+        comments: []
+      };
+    });
 
     res.json(posts);
   } catch (err) {
@@ -1332,6 +1341,11 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
       return res.status(500).json({ error: 'Failed to create post' });
     }
 
+    const rawName = user ? user.student_name : null;
+    const displayName = (rawName && rawName !== 'Verified Student')
+      ? rawName
+      : (user ? user.username : req.user.username);
+
     const postDto = {
       id: newPost.id,
       content: newPost.content,
@@ -1341,8 +1355,8 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
       upload_status: newPost.upload_status || 'ready',
       created_at: newPost.created_at || new Date().toISOString(),
       username: user ? user.username : req.user.username,
-      student_name: user ? (user.student_name || user.username) : req.user.username,
-      is_verified: user ? (user.is_verified || false) : true,
+      student_name: displayName,
+      is_verified: user ? (user.is_verified || false) : false,
       profile_pic_base64: user ? user.profile_pic_base64 : null,
       branch: user ? user.branch : null,
       likes_count: 0,
