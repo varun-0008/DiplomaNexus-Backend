@@ -520,8 +520,32 @@ app.post('/api/auth/register', async (req, res) => {
   }
 
   const cleanUsername = username.trim().toLowerCase();
-  const cleanPin = pin ? pin.trim() : null;
-  const isVerified = !!cleanPin; // Instantly verified if registered with SBTET PIN!
+  const cleanPin = pin ? pin.trim() : (cleanUsername.includes('-') ? cleanUsername : null);
+
+  let finalStudentName = student_name || null;
+  let finalBranch = branch || null;
+  let finalCollege = college_name || null;
+  let finalMobile = mobile_number || null;
+  let isVerified = !!cleanPin;
+
+  // Auto-derive official student details from SBTET Bonafide API
+  if (cleanPin) {
+    try {
+      console.log(`[Register] Auto-fetching official SBTET student info for PIN: ${cleanPin}...`);
+      const sbtetResult = await sbtet.getBonafideDetails(cleanPin);
+      if (sbtetResult.success && sbtetResult.student) {
+        const s = sbtetResult.student;
+        finalStudentName = s.name;
+        finalBranch = s.branchName;
+        finalCollege = s.collegeName;
+        finalMobile = s.phoneNumber || finalMobile;
+        isVerified = true;
+        console.log(`[Register] Derived official SBTET info: Name="${s.name}", Branch="${s.branchName}", College="${s.collegeName}"`);
+      }
+    } catch (sbtetErr) {
+      console.error('[Register SBTET Fetch Notice]', sbtetErr.message);
+    }
+  }
 
   try {
     // 1. Check existing username in Supabase
@@ -531,7 +555,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     if (cleanPin) {
-      const checkPinRes = await supabaseRestRequest(`users?pin=eq.${encodeURIComponent(cleanPin)}&select=id`);
+      const checkPinRes = await supabaseRestRequest(`users?pin=eq.${encodeURIComponent(cleanPin.toUpperCase())}&select=id`);
       if (checkPinRes.status === 200 && checkPinRes.data && checkPinRes.data.length > 0) {
         return res.status(400).json({ error: 'This SBTET PIN is already registered to another account' });
       }
@@ -546,11 +570,11 @@ app.post('/api/auth/register', async (req, res) => {
     const insertRes = await supabaseRestRequest('users', 'POST', [{
       username: cleanUsername,
       password_hash: passwordHash,
-      pin: cleanPin,
-      student_name: student_name || null,
-      branch: branch || null,
-      college_name: college_name || null,
-      mobile_number: mobile_number || null,
+      pin: cleanPin ? cleanPin.toUpperCase() : null,
+      student_name: finalStudentName,
+      branch: finalBranch,
+      college_name: finalCollege,
+      mobile_number: finalMobile,
       is_verified: isVerified,
       subscription_tier: 'Free'
     }]);
@@ -566,7 +590,7 @@ app.post('/api/auth/register', async (req, res) => {
         const newUserPg = await pool.query(
           `INSERT INTO users (username, password_hash, pin, student_name, branch, college_name, mobile_number, is_verified) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, username`,
-          [cleanUsername, passwordHash, cleanPin, student_name || null, branch || null, college_name || null, mobile_number || null, isVerified]
+          [cleanUsername, passwordHash, cleanPin ? cleanPin.toUpperCase() : null, finalStudentName, finalBranch, finalCollege, finalMobile, isVerified]
         );
         registeredUser = newUserPg.rows[0];
       } catch (pgErr) {
@@ -696,13 +720,31 @@ app.post('/api/verify', authenticateToken, async (req, res) => {
       console.log(`[Verify] SBTET automatic verification failed: ${sbtetResult.error}`);
     }
 
-    // Update user record
-    await pool.query(
-      `UPDATE users 
-       SET pin = $1, student_name = $2, branch = $3, college_name = $4, mobile_number = $5, is_verified = $6, verification_screenshot_base64 = $7 
-       WHERE id = $8`,
-      [pin, finalName, finalBranch, finalCollege, finalMobile, verifiedStatus, screenshot || null, req.user.id]
-    );
+    // Update user record in Supabase REST
+    try {
+      await supabaseRestRequest(`users?id=eq.${req.user.id}`, 'PATCH', {
+        pin: pin.toUpperCase(),
+        student_name: finalName,
+        branch: finalBranch,
+        college_name: finalCollege,
+        mobile_number: finalMobile,
+        is_verified: verifiedStatus,
+        verification_screenshot_base64: screenshot || null
+      });
+    } catch (supErr) {
+      console.error('[Supabase Verify Update Error]', supErr.message);
+    }
+
+    try {
+      await pool.query(
+        `UPDATE users 
+         SET pin = $1, student_name = $2, branch = $3, college_name = $4, mobile_number = $5, is_verified = $6, verification_screenshot_base64 = $7 
+         WHERE id = $8`,
+        [pin.toUpperCase(), finalName, finalBranch, finalCollege, finalMobile, verifiedStatus, screenshot || null, req.user.id]
+      );
+    } catch (pgErr) {
+      console.error('[PG Verify Update Error]', pgErr.message);
+    }
 
     const user = await getUserWithStats(req.user.id);
 

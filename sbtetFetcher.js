@@ -5,7 +5,7 @@
  */
 const https = require('https');
 
-const SBTET_BASE = 'https://www.sbtet.telangana.gov.in';
+const SBTET_BASE = 'https://sbtet.telangana.gov.in';
 const THROTTLE_MS = 300; // 300ms between requests
 
 // Known scheme mappings
@@ -25,12 +25,14 @@ function sleep(ms) {
 function sbtetGet(endpoint, params = {}, customHeaders = {}) {
   return new Promise((resolve, reject) => {
     const query = new URLSearchParams(params).toString();
-    const url = `${SBTET_BASE}/api/${endpoint}${query ? '?' + query : ''}`;
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+    const url = `${SBTET_BASE}/${cleanEndpoint}${query ? '?' + query : ''}`;
+    const token = process.env.SBTET_TOKEN || customHeaders.token || '5064e432c253457197f26c7d9e13d969';
 
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/plain, */*',
-      'token': 'DUMMY_TOKEN', // PreExamination endpoints require a token header but don't validate it
+      'token': token,
       ...customHeaders
     };
 
@@ -67,7 +69,7 @@ function sbtetGet(endpoint, params = {}, customHeaders = {}) {
  */
 async function getBonafideDetails(pin) {
   const cleanPin = pin.trim().toUpperCase();
-  const res = await sbtetGet('api/PreExamination/getBonafiedDetailsByPin', { pin: cleanPin });
+  const res = await sbtetGet('api/api/PreExamination/getBonafiedDetailsByPin', { pin: cleanPin });
   if (res.status === 200 && res.data) {
     const table1 = res.data.Table1 || [];
     if (table1.length > 0) {
