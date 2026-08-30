@@ -528,8 +528,30 @@ app.post('/api/auth/register', async (req, res) => {
   let finalMobile = mobile_number || null;
   let isVerified = !!cleanPin;
 
+  // Fetch official student details from SBTET Bonafide API (with 3.5s fast timeout) before database insertion
+  if (cleanPin) {
+    try {
+      console.log(`[Register] Fetching official SBTET bonafide info for PIN: ${cleanPin}...`);
+      const sbtetPromise = sbtet.getBonafideDetails(cleanPin);
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ success: false, error: 'timeout' }), 3500));
+      const sbtetResult = await Promise.race([sbtetPromise, timeoutPromise]);
+      
+      if (sbtetResult && sbtetResult.success && sbtetResult.student) {
+        const s = sbtetResult.student;
+        finalStudentName = s.name || finalStudentName;
+        finalBranch = s.branchName || finalBranch;
+        finalCollege = s.collegeName || finalCollege;
+        finalMobile = s.phoneNumber || finalMobile;
+        isVerified = true;
+        console.log(`[Register] Successfully resolved SBTET info: Name="${s.name}", Branch="${s.branchName}", College="${s.collegeName}"`);
+      }
+    } catch (sbtetErr) {
+      console.error('[Register SBTET Fetch Notice]', sbtetErr.message);
+    }
+  }
+
   try {
-    // 1. Fast Check existing username in Supabase
+    // 1. Check existing username in Supabase
     const checkUserRes = await supabaseRestRequest(`users?username=eq.${encodeURIComponent(cleanUsername)}&select=id`);
     if (checkUserRes.status === 200 && checkUserRes.data && checkUserRes.data.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
@@ -547,7 +569,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     let registeredUser = null;
 
-    // 2. Fast Insert user into Supabase users table via Native HTTPS PostgREST
+    // 2. Insert user into Supabase users table with official student details
     const insertRes = await supabaseRestRequest('users', 'POST', [{
       username: cleanUsername,
       password_hash: passwordHash,
