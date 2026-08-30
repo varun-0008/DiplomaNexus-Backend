@@ -38,6 +38,7 @@ function sbtetGet(endpoint, params = {}, customHeaders = {}) {
 
     const req = https.get(url, {
       headers: headers,
+      rejectUnauthorized: false,
       timeout: 30000,
     }, (res) => {
       let data = '';
