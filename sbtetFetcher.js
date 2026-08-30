@@ -19,6 +19,31 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+const { execFile } = require('child_process');
+const path = require('path');
+
+function runPythonBonafideScript(pin) {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, 'get_bonafide.py');
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    
+    execFile(pyCmd, [scriptPath, pin], { timeout: 15000 }, (error, stdout, stderr) => {
+      if (error || !stdout) {
+        return resolve(null);
+      }
+      try {
+        let parsed = JSON.parse(stdout.trim());
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
+        resolve(parsed);
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  });
+}
+
 /**
  * Make an HTTPS GET request to SBTET API
  */
@@ -27,7 +52,7 @@ function sbtetGet(endpoint, params = {}, customHeaders = {}) {
     const query = new URLSearchParams(params).toString();
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
     const url = `${SBTET_BASE}/${cleanEndpoint}${query ? '?' + query : ''}`;
-    const token = process.env.SBTET_TOKEN || customHeaders.token || '5064e432c253457197f26c7d9e13d969';
+    const token = customHeaders.token || 'null';
 
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
@@ -68,11 +93,37 @@ function sbtetGet(endpoint, params = {}, customHeaders = {}) {
 }
 
 /**
- * Fetch bonafide student details by PIN from SBTET
+ * Fetch bonafide student details by PIN from SBTET using Python bonafide.py script
  */
 async function getBonafideDetails(pin) {
   const cleanPin = pin.trim().toUpperCase();
-  const res = await sbtetGet('api/api/PreExamination/getBonafiedDetailsByPin', { pin: cleanPin });
+
+  // 1. Try python get_bonafide.py script execution first
+  try {
+    const pyData = await runPythonBonafideScript(cleanPin);
+    if (pyData && pyData.Table1 && pyData.Table1.length > 0) {
+      const row = pyData.Table1[0];
+      return {
+        success: true,
+        student: {
+          pin: row.Pin,
+          name: row.Name,
+          fatherName: row.FatherName,
+          collegeCode: row.CollegeCode,
+          collegeName: row.CollegeName,
+          collegeAddress: row.CollegeAddress,
+          branchCode: row.BranchCode,
+          branchName: row.BranchName,
+          phoneNumber: row.StudentPhoneNumber
+        }
+      };
+    }
+  } catch (pyErr) {
+    console.error('[Python Bonafide Fetcher Notice]', pyErr.message);
+  }
+
+  // 2. Native HTTPS fallback without token
+  const res = await sbtetGet('api/api/PreExamination/getBonafiedDetailsByPin', { pin: cleanPin }, { token: 'null' });
   if (res.status === 200 && res.data) {
     const table1 = res.data.Table1 || [];
     if (table1.length > 0) {
