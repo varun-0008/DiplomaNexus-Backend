@@ -528,27 +528,8 @@ app.post('/api/auth/register', async (req, res) => {
   let finalMobile = mobile_number || null;
   let isVerified = !!cleanPin;
 
-  // Auto-derive official student details from SBTET Bonafide API
-  if (cleanPin) {
-    try {
-      console.log(`[Register] Auto-fetching official SBTET student info for PIN: ${cleanPin}...`);
-      const sbtetResult = await sbtet.getBonafideDetails(cleanPin);
-      if (sbtetResult.success && sbtetResult.student) {
-        const s = sbtetResult.student;
-        finalStudentName = s.name;
-        finalBranch = s.branchName;
-        finalCollege = s.collegeName;
-        finalMobile = s.phoneNumber || finalMobile;
-        isVerified = true;
-        console.log(`[Register] Derived official SBTET info: Name="${s.name}", Branch="${s.branchName}", College="${s.collegeName}"`);
-      }
-    } catch (sbtetErr) {
-      console.error('[Register SBTET Fetch Notice]', sbtetErr.message);
-    }
-  }
-
   try {
-    // 1. Check existing username in Supabase
+    // 1. Fast Check existing username in Supabase
     const checkUserRes = await supabaseRestRequest(`users?username=eq.${encodeURIComponent(cleanUsername)}&select=id`);
     if (checkUserRes.status === 200 && checkUserRes.data && checkUserRes.data.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
@@ -566,7 +547,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     let registeredUser = null;
 
-    // 2. Insert user into Supabase users table via Native HTTPS PostgREST
+    // 2. Fast Insert user into Supabase users table via Native HTTPS PostgREST
     const insertRes = await supabaseRestRequest('users', 'POST', [{
       username: cleanUsername,
       password_hash: passwordHash,
@@ -599,13 +580,52 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     if (!registeredUser) {
-      return res.status(500).json({ error: 'Failed to create user account. Please try again.' });
+      return res.status(500).json({ error: 'Registration failed due to a database error' });
     }
 
-    const token = jwt.sign({ id: registeredUser.id, username: registeredUser.username }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign(
+      { id: registeredUser.id, username: registeredUser.username },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
     const user = await getUserWithStats(registeredUser.id);
 
-    res.status(201).json({ token, user });
+    // Return instant response to client (< 200ms)
+    res.status(201).json({
+      token,
+      user
+    });
+
+    // Run SBTET official bonafide details fetch in background asynchronously (non-blocking)
+    if (cleanPin) {
+      setImmediate(async () => {
+        try {
+          console.log(`[Background SBTET Fetch] Updating student info for PIN: ${cleanPin}...`);
+          const sbtetResult = await sbtet.getBonafideDetails(cleanPin);
+          if (sbtetResult.success && sbtetResult.student) {
+            const s = sbtetResult.student;
+            console.log(`[Background SBTET Fetch] Got Name="${s.name}", Branch="${s.branchName}", College="${s.collegeName}"`);
+            
+            await supabaseRestRequest(`users?id=eq.${registeredUser.id}`, 'PATCH', {
+              student_name: s.name,
+              branch: s.branchName,
+              college_name: s.collegeName,
+              mobile_number: s.phoneNumber || null,
+              is_verified: true
+            });
+
+            await pool.query(
+              `UPDATE users SET student_name = $1, branch = $2, college_name = $3, mobile_number = $4, is_verified = TRUE WHERE id = $5`,
+              [s.name, s.branchName, s.collegeName, s.phoneNumber || null, registeredUser.id]
+            );
+          }
+        } catch (bErr) {
+          console.error('[Background SBTET Error]', bErr.message);
+        }
+      });
+    }
+    return;
   } catch (err) {
     console.error('[Register Error]', err);
     res.status(500).json({ error: err.stack || err.message || String(err) });
