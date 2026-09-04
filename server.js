@@ -217,7 +217,19 @@ pool.query('SELECT NOW()', (err, res) => {
          image_base64 TEXT,
          listing_type VARCHAR(20) DEFAULT 'product',
          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-       );`,
+       );
+       CREATE TABLE IF NOT EXISTS notifications (
+         id SERIAL PRIMARY KEY,
+         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+         sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+         type VARCHAR(50) NOT NULL,
+         extra_text TEXT,
+         post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+         is_read BOOLEAN DEFAULT false,
+         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+       );
+       CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC);
+       ALTER TABLE blogs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;`,
       async (errMigrate) => {
         if (errMigrate) {
           console.error('Error running database migration:', errMigrate);
@@ -405,6 +417,39 @@ function enqueueMediaJob(postId, base64Data, mediaType) {
   } else {
     inMemoryMediaQueue.push({ postId, base64Data, mediaType });
     triggerInMemoryProcessing();
+  }
+}
+
+// Notification Helper
+async function createNotification({ userId, senderId, type, extraText = null, postId = null }) {
+  if (!userId || !senderId || parseInt(userId) === parseInt(senderId)) return null;
+  try {
+    const res = await pool.query(
+      `INSERT INTO notifications (user_id, sender_id, type, extra_text, post_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [parseInt(userId), parseInt(senderId), type, extraText, postId ? parseInt(postId) : null]
+    );
+    const notif = res.rows[0];
+    const senderRes = await pool.query(
+      `SELECT id, username, student_name, profile_pic_base64, is_verified FROM users WHERE id = $1`,
+      [senderId]
+    );
+    const sender = senderRes.rows[0] || {};
+    const fullNotif = {
+      id: notif.id.toString(),
+      type: notif.type,
+      senderName: sender.student_name || sender.username || 'Someone',
+      senderAvatar: sender.profile_pic_base64 || null,
+      extraText: notif.extra_text,
+      timestamp: new Date(notif.created_at).getTime(),
+      isRead: false,
+      postId: notif.post_id
+    };
+    io.to(`user_${userId}`).emit('new_notification', fullNotif);
+    return notif;
+  } catch (err) {
+    console.error('[Notification Error]', err.message);
+    return null;
   }
 }
 
@@ -973,6 +1018,13 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
       [followerId, targetUserId]
     );
 
+    createNotification({
+      userId: targetUserId,
+      senderId: followerId,
+      type: 'follow',
+      extraText: 'started following you.'
+    });
+
     res.json({ message: 'Successfully followed user', followed: true });
   } catch (err) {
     console.error(err);
@@ -995,6 +1047,48 @@ app.post('/api/users/:id/unfollow', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error unfollowing user' });
+  }
+});
+
+// Get user's followers
+app.get('/api/users/:id/followers', authenticateToken, async (req, res) => {
+  const targetId = parseInt(req.params.id);
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.username, u.student_name, u.branch, u.college_name, u.is_verified,
+              u.profile_pic_base64, u.about_me,
+              EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = u.id) as is_following
+       FROM follows f
+       JOIN users u ON f.follower_id = u.id
+       WHERE f.following_id = $1
+       ORDER BY f.created_at DESC`,
+      [targetId, req.user.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error getting followers:', err);
+    res.status(500).json({ error: 'Server error getting followers' });
+  }
+});
+
+// Get users followed by user
+app.get('/api/users/:id/following', authenticateToken, async (req, res) => {
+  const targetId = parseInt(req.params.id);
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.username, u.student_name, u.branch, u.college_name, u.is_verified,
+              u.profile_pic_base64, u.about_me,
+              EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = u.id) as is_following
+       FROM follows f
+       JOIN users u ON f.following_id = u.id
+       WHERE f.follower_id = $1
+       ORDER BY f.created_at DESC`,
+      [targetId, req.user.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error getting following:', err);
+    res.status(500).json({ error: 'Server error getting following' });
   }
 });
 
@@ -1597,7 +1691,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const postsQuery = await pool.query(
-      `SELECT p.id, p.content, p.image_base64, p.media_url, p.media_type, 
+      `SELECT p.id, p.user_id, p.content, p.image_base64, p.media_url, p.media_type, 
               COALESCE(p.upload_status, 'ready') as upload_status, p.created_at,
               u.username, u.student_name, u.is_verified, u.profile_pic_base64, u.branch,
               COALESCE((SELECT COUNT(*)::integer FROM likes WHERE post_id = p.id), 0) as likes_count,
@@ -1606,6 +1700,7 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
                 (SELECT json_agg(
                    json_build_object(
                      'id', c.id,
+                     'user_id', c.user_id,
                      'content', c.content,
                      'created_at', c.created_at,
                      'username', cu.username,
@@ -1849,6 +1944,18 @@ app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
       // Like
       await pool.query('INSERT INTO likes (user_id, post_id) VALUES ($1, $2)', [req.user.id, postId]);
       liked = true;
+
+      // Notify post owner
+      const postOwner = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId]);
+      if (postOwner.rows.length > 0) {
+        createNotification({
+          userId: postOwner.rows[0].user_id,
+          senderId: req.user.id,
+          type: 'like',
+          extraText: 'liked your post.',
+          postId: postId
+        });
+      }
     }
 
     const likesCount = await pool.query('SELECT COUNT(*) FROM likes WHERE post_id = $1', [postId]);
@@ -1884,10 +1991,115 @@ app.post('/api/posts/:id/comment', authenticateToken, async (req, res) => {
       [result.rows[0].id]
     );
 
+    // Notify post owner
+    const postOwner = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId]);
+    if (postOwner.rows.length > 0) {
+      createNotification({
+        userId: postOwner.rows[0].user_id,
+        senderId: req.user.id,
+        type: 'comment',
+        extraText: `commented: "${content.substring(0, 60)}${content.length > 60 ? '...' : ''}"`,
+        postId: postId
+      });
+    }
+
     res.status(201).json(commentDetails.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error creating comment' });
+  }
+});
+
+// Delete post
+app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+  const postId = parseInt(req.params.id);
+  try {
+    const postCheck = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId]);
+    if (postCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    if (postCheck.rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: 'You are not authorized to delete this post' });
+    }
+
+    await pool.query('DELETE FROM seen_posts WHERE post_id = $1', [postId]).catch(() => {});
+    await pool.query('DELETE FROM likes WHERE post_id = $1', [postId]).catch(() => {});
+    await pool.query('DELETE FROM comments WHERE post_id = $1', [postId]).catch(() => {});
+    await pool.query('DELETE FROM notifications WHERE post_id = $1', [postId]).catch(() => {});
+    await pool.query('DELETE FROM posts WHERE id = $1', [postId]);
+
+    res.json({ message: 'Post deleted successfully', id: postId });
+  } catch (err) {
+    console.error('Error deleting post:', err);
+    res.status(500).json({ error: 'Server error deleting post' });
+  }
+});
+
+// Delete comment
+app.delete('/api/comments/:id', authenticateToken, async (req, res) => {
+  const commentId = parseInt(req.params.id);
+  try {
+    const commentCheck = await pool.query(
+      `SELECT c.user_id, c.post_id, p.user_id as post_author_id
+       FROM comments c
+       JOIN posts p ON c.post_id = p.id
+       WHERE c.id = $1`,
+      [commentId]
+    );
+    if (commentCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    const comment = commentCheck.rows[0];
+    if (comment.user_id !== req.user.id && comment.post_author_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized to delete this comment' });
+    }
+
+    await pool.query('DELETE FROM comments WHERE id = $1', [commentId]);
+    res.json({ message: 'Comment deleted successfully', id: commentId, post_id: comment.post_id });
+  } catch (err) {
+    console.error('Error deleting comment:', err);
+    res.status(500).json({ error: 'Server error deleting comment' });
+  }
+});
+
+// Get user notifications
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT n.id, n.type, n.extra_text, n.post_id, n.is_read, n.created_at,
+              u.username as sender_username, u.student_name as sender_student_name, u.profile_pic_base64 as sender_avatar
+       FROM notifications n
+       JOIN users u ON n.sender_id = u.id
+       WHERE n.user_id = $1
+       ORDER BY n.created_at DESC
+       LIMIT 50`,
+      [req.user.id]
+    );
+    const notifs = result.rows.map(r => ({
+      id: r.id.toString(),
+      type: r.type,
+      senderName: r.sender_student_name || r.sender_username || 'Someone',
+      senderAvatar: r.sender_avatar || null,
+      extraText: r.extra_text,
+      timestamp: new Date(r.created_at).getTime(),
+      isRead: r.is_read,
+      postId: r.post_id
+    }));
+    res.json(notifs);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ error: 'Server error retrieving notifications' });
+  }
+});
+
+// Mark all notifications as read
+app.post('/api/notifications/mark-read', authenticateToken, async (req, res) => {
+  try {
+    await pool.query('UPDATE notifications SET is_read = true WHERE user_id = $1', [req.user.id]);
+    res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    console.error('Error marking notifications read:', err);
+    res.status(500).json({ error: 'Server error updating notifications' });
   }
 });
 
@@ -2148,6 +2360,7 @@ io.on('connection', async (socket) => {
 
   // Register in online users map
   onlineUsers.set(userId, socket.id);
+  socket.join(`user_${userId}`);
 
   // Join all chat rooms this user participates in
   try {
@@ -2184,6 +2397,20 @@ io.on('connection', async (socket) => {
 
       // Broadcast to all participants in the room
       io.to(`room_${room_id}`).emit('new_message', message);
+
+      // Send notification to other room participant(s)
+      const otherParts = await pool.query(
+        `SELECT user_id FROM chat_room_participants WHERE room_id = $1 AND user_id != $2`,
+        [room_id, userId]
+      );
+      for (const p of otherParts.rows) {
+        createNotification({
+          userId: p.user_id,
+          senderId: userId,
+          type: 'message',
+          extraText: text_content ? text_content.substring(0, 60) : 'sent a media attachment.'
+        });
+      }
 
     } catch (err) {
       console.error('Error sending message:', err);
