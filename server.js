@@ -1037,14 +1037,27 @@ app.post('/api/profile/change-password', authenticateToken, async (req, res) => 
 app.put('/api/profile', authenticateToken, async (req, res) => {
   const { about_me, profile_pic_base64 } = req.body;
   try {
-    await pool.query(
-      'UPDATE users SET about_me = COALESCE($1, about_me), profile_pic_base64 = COALESCE($2, profile_pic_base64) WHERE id = $3',
-      [about_me, profile_pic_base64, req.user.id]
-    );
+    const updatePayload = {};
+    if (about_me !== undefined) updatePayload.about_me = about_me;
+    if (profile_pic_base64 !== undefined && profile_pic_base64 !== null) updatePayload.profile_pic_base64 = profile_pic_base64;
+
+    if (Object.keys(updatePayload).length > 0) {
+      await pool.query(
+        'UPDATE users SET about_me = COALESCE($1, about_me), profile_pic_base64 = COALESCE($2, profile_pic_base64) WHERE id = $3',
+        [about_me !== undefined ? about_me : null, (profile_pic_base64 !== undefined && profile_pic_base64 !== null) ? profile_pic_base64 : null, req.user.id]
+      );
+
+      try {
+        await supabaseRestRequest(`users?id=eq.${req.user.id}`, 'PATCH', updatePayload);
+      } catch (supErr) {
+        console.error('[Supabase Profile Update Error]', supErr.message);
+      }
+    }
+
     const user = await getUserWithStats(req.user.id);
     res.json({ message: 'Profile updated successfully', user });
   } catch (err) {
-    console.error(err);
+    console.error('[Update Profile Error]', err);
     res.status(500).json({ error: 'Server error updating profile' });
   }
 });
