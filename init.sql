@@ -124,4 +124,16 @@ INSERT INTO student_semester_data (pin, semester_number, attendance_percentage, 
 ('23001-CM-002', 4, 80, 7.80, 0),
 ('23001-CM-002', 5, 76, 7.40, 1),
 ('23001-CM-002', 6, 79, 7.90, 0);
-
+-- Notifications Table
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL,
+    extra_text TEXT,
+    post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+    is_read BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC);
+ALTER TABLE blogs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
