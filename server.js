@@ -1595,64 +1595,54 @@ app.post('/api/sbtet/otp/verify', authenticateToken, async (req, res) => {
 // Get feed posts
 app.get('/api/posts', authenticateToken, async (req, res) => {
   try {
-    const postsRes = await supabaseRestRequest('posts?select=*,users!posts_user_id_fkey(username,student_name,is_verified,profile_pic_base64,branch)&order=created_at.desc&limit=50');
-    
-    if (postsRes.status === 200 && Array.isArray(postsRes.data)) {
-      const formattedPosts = postsRes.data.map(p => {
-        const author = p.users || {};
-        const displayName = (author.student_name && author.student_name !== 'Verified Student')
-          ? author.student_name
-          : (author.username || 'Student');
-        return {
-          id: p.id,
-          content: p.content,
-          image_base64: p.image_base64,
-          media_url: p.media_url,
-          media_type: p.media_type || 'image',
-          upload_status: p.upload_status || 'ready',
-          created_at: p.created_at,
-          username: author.username || 'student',
-          student_name: displayName,
-          is_verified: author.is_verified || false,
-          profile_pic_base64: author.profile_pic_base64 || null,
-          branch: author.branch || null,
-          likes_count: 0,
-          is_liked_by_me: false,
-          comments: []
-        };
-      });
-      return res.json(formattedPosts);
-    }
-  } catch (e) {
-    console.error('[GET /api/posts REST Error]', e.message);
-  }
-
-  try {
+    const userId = req.user.id;
     const postsQuery = await pool.query(
-      `SELECT p.id, p.content, p.image_base64, p.media_url, p.media_type, p.upload_status, p.created_at,
+      `SELECT p.id, p.content, p.image_base64, p.media_url, p.media_type, 
+              COALESCE(p.upload_status, 'ready') as upload_status, p.created_at,
               u.username, u.student_name, u.is_verified, u.profile_pic_base64, u.branch,
-              COALESCE((SELECT COUNT(*) FROM likes WHERE post_id = p.id), 0) as likes_count,
-              EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1) as is_liked_by_me
+              COALESCE((SELECT COUNT(*)::integer FROM likes WHERE post_id = p.id), 0) as likes_count,
+              EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1) as is_liked_by_me,
+              COALESCE(
+                (SELECT json_agg(
+                   json_build_object(
+                     'id', c.id,
+                     'content', c.content,
+                     'created_at', c.created_at,
+                     'username', cu.username,
+                     'student_name', COALESCE(cu.student_name, cu.username),
+                     'is_verified', cu.is_verified
+                   ) ORDER BY c.created_at ASC
+                 )
+                 FROM comments c
+                 JOIN users cu ON c.user_id = cu.id
+                 WHERE c.post_id = p.id
+                ), '[]'::json
+              ) as comments
        FROM posts p
        JOIN users u ON p.user_id = u.id
        ORDER BY p.created_at DESC`,
-      [req.user.id]
+      [userId]
     );
 
-    const posts = postsQuery.rows.map(p => {
+    const formattedPosts = postsQuery.rows.map(p => {
       const displayName = (p.student_name && p.student_name !== 'Verified Student')
         ? p.student_name
         : p.username;
+      
+      const isReady = p.upload_status === 'ready' || p.media_url || p.image_base64;
       return {
         ...p,
         student_name: displayName,
-        comments: []
+        upload_status: isReady ? 'ready' : p.upload_status,
+        likes_count: parseInt(p.likes_count) || 0,
+        is_liked_by_me: !!p.is_liked_by_me,
+        comments: Array.isArray(p.comments) ? p.comments : []
       };
     });
 
-    res.json(posts);
+    res.json(formattedPosts);
   } catch (err) {
-    console.error(err);
+    console.error('[GET /api/posts Error]', err);
     res.status(500).json({ error: 'Server error fetching feed' });
   }
 });
@@ -1683,49 +1673,34 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
   if (!content && !image_base64) return res.status(400).json({ error: 'Post content or image cannot be empty' });
 
   try {
-    // 1. Fetch user details from Supabase REST
-    let user = null;
-    const userRes = await supabaseRestRequest(`users?id=eq.${req.user.id}&select=*`);
-    if (userRes.status === 200 && userRes.data && userRes.data.length > 0) {
-      user = userRes.data[0];
-    }
-
     const type = media_type || (image_base64 ? 'image' : 'tweet');
+    const initialStatus = image_base64 ? 'pending' : 'ready';
 
-    // 2. Insert post via Supabase REST
-    let newPost = null;
-    const insertRes = await supabaseRestRequest('posts', 'POST', [{
-      user_id: req.user.id,
-      content: content || '',
-      image_base64: image_base64 || null,
-      media_type: type,
-      upload_status: image_base64 ? 'pending' : 'ready'
-    }]);
+    // 1. Insert into PostgreSQL primary database
+    const pgRes = await pool.query(
+      "INSERT INTO posts (user_id, content, image_base64, media_type, upload_status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [req.user.id, content || '', image_base64 || null, type, initialStatus]
+    );
+    const newPost = pgRes.rows[0];
 
-    if (insertRes.status === 201 && insertRes.data && insertRes.data.length > 0) {
-      newPost = insertRes.data[0];
+    // 2. Sync to Supabase REST
+    try {
+      await supabaseRestRequest('posts', 'POST', [{
+        id: newPost.id,
+        user_id: req.user.id,
+        content: content || '',
+        image_base64: image_base64 || null,
+        media_type: type,
+        upload_status: initialStatus
+      }]);
+    } catch (supErr) {
+      console.error('[Supabase Post Sync Warning]', supErr.message);
     }
 
-    if (!newPost) {
-      try {
-        const pgRes = await pool.query(
-          "INSERT INTO posts (user_id, content, image_base64, media_type, upload_status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-          [req.user.id, content || '', image_base64 || null, type, image_base64 ? 'pending' : 'ready']
-        );
-        newPost = pgRes.rows[0];
-      } catch (pgErr) {
-        console.error('[PG Create Post Error]', pgErr.message);
-      }
-    }
-
-    if (!newPost) {
-      return res.status(500).json({ error: 'Failed to create post' });
-    }
-
-    const rawName = user ? user.student_name : null;
-    const displayName = (rawName && rawName !== 'Verified Student')
-      ? rawName
-      : (user ? user.username : req.user.username);
+    // 3. Get Author user stats
+    const userQuery = await pool.query('SELECT username, student_name, is_verified, profile_pic_base64, branch FROM users WHERE id = $1', [req.user.id]);
+    const author = userQuery.rows[0] || {};
+    const displayName = (author.student_name && author.student_name !== 'Verified Student') ? author.student_name : (author.username || req.user.username);
 
     const postDto = {
       id: newPost.id,
@@ -1735,10 +1710,12 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
       media_type: newPost.media_type || type,
       upload_status: newPost.upload_status || 'ready',
       created_at: newPost.created_at || new Date().toISOString(),
-      username: user ? user.username : req.user.username,
+      username: author.username || req.user.username,
       student_name: displayName,
-      is_verified: user ? (user.is_verified || false) : false,
-      profile_pic_base64: user ? user.profile_pic_base64 : null,
+      is_verified: author.is_verified || false,
+      profile_pic_base64: author.profile_pic_base64 || null,
+      branch: author.branch || null,
+      likes_count: 0,
       is_liked_by_me: false,
       comments: []
     };
