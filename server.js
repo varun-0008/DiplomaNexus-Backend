@@ -302,9 +302,9 @@ async function uploadToR2(fileBufferOrBase64, fileName, contentType = 'image/jpe
 
   const publicDomain = process.env.R2_PUBLIC_URL 
     ? process.env.R2_PUBLIC_URL.replace(/\/$/, '') 
-    : `https://${bucketName}.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+    : (process.env.R2_DEV_URL ? process.env.R2_DEV_URL.replace(/\/$/, '') : null);
 
-  return `${publicDomain}/${fileName}`;
+  return publicDomain ? `${publicDomain}/${fileName}` : null;
 }
 
 if (process.env.CLOUDINARY_CLOUD_NAME) {
@@ -366,10 +366,17 @@ async function processMediaUpload(postId, base64Data, mediaType) {
       const fileName = `posts/post_${postId}_${Date.now()}.${extension}`;
       const mediaUrl = await uploadToR2(base64Data, fileName, contentType);
       
-      await pool.query(
-        "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
-        [mediaUrl, postId]
-      );
+      if (mediaUrl) {
+        await pool.query(
+          "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
+          [mediaUrl, postId]
+        );
+      } else {
+        await pool.query(
+          "UPDATE posts SET upload_status = 'ready' WHERE id = $1",
+          [postId]
+        );
+      }
     } else if (process.env.CLOUDINARY_CLOUD_NAME) {
       const result = await cloudinary.uploader.upload(base64Data, {
         resource_type: mediaType === 'video' ? 'video' : 'image',
@@ -1705,7 +1712,9 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
                      'created_at', c.created_at,
                      'username', cu.username,
                      'student_name', COALESCE(cu.student_name, cu.username),
-                     'is_verified', cu.is_verified
+                     'is_verified', cu.is_verified,
+                     'branch', cu.branch,
+                     'profile_pic_base64', cu.profile_pic_base64
                    ) ORDER BY c.created_at ASC
                  )
                  FROM comments c
@@ -1984,7 +1993,9 @@ app.post('/api/posts/:id/comment', authenticateToken, async (req, res) => {
     );
 
     const commentDetails = await pool.query(
-      `SELECT c.id, c.content, c.created_at, u.username, u.student_name, u.is_verified, u.branch
+      `SELECT c.id, c.user_id, c.content, c.created_at, u.username, 
+              COALESCE(u.student_name, u.username) as student_name, 
+              u.is_verified, u.branch, u.profile_pic_base64
        FROM comments c
        JOIN users u ON c.user_id = u.id
        WHERE c.id = $1`,
