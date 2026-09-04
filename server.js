@@ -987,6 +987,9 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
 // Search users (returns active relationship stats and dynamic is_following flag)
 app.get('/api/users/search', authenticateToken, async (req, res) => {
   const { q } = req.query;
+  const currentUserId = parseInt(req.user.id) || 0;
+  const searchTerm = `%${(q || '').trim()}%`;
+
   try {
     const result = await pool.query(
       `SELECT u.id, u.username, u.pin, u.student_name, u.branch, u.college_name, u.is_verified, u.about_me, u.profile_pic_base64,
@@ -995,12 +998,20 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
               COALESCE((SELECT COUNT(*)::integer FROM follows f1 JOIN follows f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id WHERE f1.follower_id = u.id), 0) as friends_count,
               EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND following_id = u.id) as is_following
        FROM users u
-       WHERE (u.username ILIKE $1 OR u.student_name ILIKE $1 OR u.pin ILIKE $1) AND u.id != $2`,
-      [`%${q || ''}%`, req.user.id]
+       WHERE (
+         COALESCE(u.username, '') ILIKE $1 OR 
+         COALESCE(u.student_name, '') ILIKE $1 OR 
+         COALESCE(u.pin, '') ILIKE $1 OR 
+         COALESCE(u.branch, '') ILIKE $1 OR 
+         COALESCE(u.college_name, '') ILIKE $1
+       ) AND u.id != $2
+       ORDER BY u.is_verified DESC, followers_count DESC, u.created_at DESC
+       LIMIT 60`,
+      [searchTerm, currentUserId]
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error('[Search Users Error]', err);
     res.status(500).json({ error: 'Server error searching users' });
   }
 });
