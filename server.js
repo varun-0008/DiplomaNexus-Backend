@@ -530,7 +530,7 @@ async function getUserWithStats(userId) {
 
 // Health Check Endpoint (For UptimeRobot Always-On Keepalive)
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString(), service: 'DiplomaNexus Backend' });
+  res.status(200).json({ status: 'ok', version: '1.0.2-feed-search-resilient', timestamp: new Date().toISOString(), service: 'DiplomaNexus Backend' });
 });
 
 // ------------------- AUTH ENDPOINTS -------------------
