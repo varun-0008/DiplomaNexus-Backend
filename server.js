@@ -1026,7 +1026,44 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('[Search Users Error]', err);
+    console.warn('[Search Users Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      const cleanTerm = (q || '').trim();
+      let queryUrl = `users?select=id,username,pin,student_name,branch,college_name,is_verified,about_me,profile_pic_base64,created_at&id=neq.${currentUserId}&order=is_verified.desc,created_at.desc&limit=60`;
+      if (cleanTerm.length > 0) {
+        queryUrl = `users?select=id,username,pin,student_name,branch,college_name,is_verified,about_me,profile_pic_base64,created_at&id=neq.${currentUserId}&or=(username.ilike.*${encodeURIComponent(cleanTerm)}*,student_name.ilike.*${encodeURIComponent(cleanTerm)}*,pin.ilike.*${encodeURIComponent(cleanTerm)}*,branch.ilike.*${encodeURIComponent(cleanTerm)}*,college_name.ilike.*${encodeURIComponent(cleanTerm)}*)&order=is_verified.desc,created_at.desc&limit=60`;
+      }
+      const usersRes = await supabaseRestRequest(queryUrl);
+      if (usersRes.status === 200 && Array.isArray(usersRes.data)) {
+        const followsRes = await supabaseRestRequest(`follows?follower_id=eq.${currentUserId}&select=following_id`);
+        const followedIds = new Set((followsRes.data || []).map(f => f.following_id));
+        
+        const allFollowsRes = await supabaseRestRequest('follows?select=following_id');
+        const followerCountMap = {};
+        (allFollowsRes.data || []).forEach(f => {
+          followerCountMap[f.following_id] = (followerCountMap[f.following_id] || 0) + 1;
+        });
+
+        const mappedUsers = usersRes.data.map(u => ({
+          id: u.id,
+          username: u.username,
+          pin: u.pin || null,
+          student_name: u.student_name || u.username,
+          branch: u.branch || null,
+          college_name: u.college_name || null,
+          is_verified: !!u.is_verified,
+          about_me: u.about_me || null,
+          profile_pic_base64: u.profile_pic_base64 || null,
+          followers_count: followerCountMap[u.id] || 0,
+          following_count: 0,
+          friends_count: 0,
+          is_following: followedIds.has(u.id)
+        }));
+        return res.json(mappedUsers);
+      }
+    } catch (restErr) {
+      console.error('[Supabase REST Search Fallback Error]', restErr.message);
+    }
     res.status(500).json({ error: 'Server error searching users' });
   }
 });
@@ -1041,11 +1078,6 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
   }
 
   try {
-    const userCheck = await pool.query('SELECT 1 FROM users WHERE id = $1', [targetUserId]);
-    if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
     await pool.query(
       'INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT (follower_id, following_id) DO NOTHING',
       [followerId, targetUserId]
@@ -1060,8 +1092,20 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Successfully followed user', followed: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error following user' });
+    console.warn('[Follow Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      await supabaseRestRequest('follows', 'POST', [{ follower_id: followerId, following_id: targetUserId }]);
+      createNotification({
+        userId: targetUserId,
+        senderId: followerId,
+        type: 'follow',
+        extraText: 'started following you.'
+      });
+      return res.json({ message: 'Successfully followed user', followed: true });
+    } catch (restErr) {
+      console.error('[Supabase REST Follow Error]', restErr.message);
+      res.status(500).json({ error: 'Server error following user' });
+    }
   }
 });
 
@@ -1078,8 +1122,14 @@ app.post('/api/users/:id/unfollow', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Successfully unfollowed user', followed: false });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error unfollowing user' });
+    console.warn('[Unfollow Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      await supabaseRestRequest(`follows?follower_id=eq.${followerId}&following_id=eq.${targetUserId}`, 'DELETE');
+      return res.json({ message: 'Successfully unfollowed user', followed: false });
+    } catch (restErr) {
+      console.error('[Supabase REST Unfollow Error]', restErr.message);
+      res.status(500).json({ error: 'Server error unfollowing user' });
+    }
   }
 });
 
@@ -1797,10 +1847,30 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
   } catch (err) {
     console.warn('[GET /api/posts Pool Notice, using Supabase REST fallback]:', err.message);
     try {
-      const postsRes = await supabaseRestRequest('posts?select=*,users(username,student_name,is_verified,profile_pic_base64,branch)&order=created_at.desc&limit=50');
+      const postsRes = await supabaseRestRequest('posts?select=*,users!posts_user_id_fkey(username,student_name,is_verified,profile_pic_base64,branch),likes(user_id),comments(*,users(username,student_name,profile_pic_base64))&order=created_at.desc&limit=100');
       if (postsRes.status === 200 && Array.isArray(postsRes.data)) {
+        const currentUserId = parseInt(req.user.id) || 0;
         const mapped = postsRes.data.map(p => {
           const u = p.users || {};
+          const displayName = (u.student_name && u.student_name !== 'Verified Student')
+            ? u.student_name
+            : (u.username || 'student');
+          const postLikes = Array.isArray(p.likes) ? p.likes : [];
+          const isLikedByMe = postLikes.some(l => l.user_id === currentUserId);
+          const postComments = Array.isArray(p.comments) ? p.comments.map(c => {
+            const cu = c.users || {};
+            return {
+              id: c.id,
+              user_id: c.user_id,
+              content: c.content,
+              created_at: c.created_at,
+              username: cu.username || 'student',
+              student_name: cu.student_name || cu.username || 'Student',
+              is_verified: cu.is_verified || false,
+              profile_pic_base64: cu.profile_pic_base64 || null
+            };
+          }) : [];
+
           return {
             id: p.id,
             user_id: p.user_id,
@@ -1811,13 +1881,13 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
             upload_status: 'ready',
             created_at: p.created_at,
             username: u.username || 'student',
-            student_name: u.student_name || u.username || 'Student',
-            is_verified: u.is_verified || false,
+            student_name: displayName,
+            is_verified: !!u.is_verified,
             profile_pic_base64: u.profile_pic_base64 || null,
             branch: u.branch || null,
-            likes_count: 0,
-            is_liked_by_me: false,
-            comments: []
+            likes_count: postLikes.length,
+            is_liked_by_me: isLikedByMe,
+            comments: postComments
           };
         });
         return res.json(mapped);
@@ -2090,8 +2160,27 @@ app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
       likes_count: parseInt(likesCount.rows[0].count)
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error liking post' });
+    console.warn('[Like Post Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      const checkRes = await supabaseRestRequest(`likes?user_id=eq.${req.user.id}&post_id=eq.${postId}&select=id`);
+      let liked = false;
+      if (checkRes.status === 200 && Array.isArray(checkRes.data) && checkRes.data.length > 0) {
+        await supabaseRestRequest(`likes?user_id=eq.${req.user.id}&post_id=eq.${postId}`, 'DELETE');
+        liked = false;
+      } else {
+        await supabaseRestRequest('likes', 'POST', [{ user_id: req.user.id, post_id: postId }]);
+        liked = true;
+      }
+      const countRes = await supabaseRestRequest(`likes?post_id=eq.${postId}&select=id`);
+      const count = (countRes.status === 200 && Array.isArray(countRes.data)) ? countRes.data.length : (liked ? 1 : 0);
+      return res.json({
+        liked,
+        likes_count: count
+      });
+    } catch (restErr) {
+      console.error('[Supabase REST Like Fallback Error]:', restErr.message);
+      res.status(500).json({ error: 'Server error liking post' });
+    }
   }
 });
 
@@ -2132,7 +2221,32 @@ app.post('/api/posts/:id/comment', authenticateToken, async (req, res) => {
 
     res.status(201).json(commentDetails.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.warn('[Comment Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      const insRes = await supabaseRestRequest('comments', 'POST', [{
+        user_id: req.user.id,
+        post_id: postId,
+        content: content
+      }]);
+      if (insRes.status === 201 && Array.isArray(insRes.data) && insRes.data.length > 0) {
+        const c = insRes.data[0];
+        const userRes = await supabaseRestRequest(`users?id=eq.${req.user.id}&select=username,student_name,is_verified,branch,profile_pic_base64`);
+        const u = (userRes.data && userRes.data[0]) || {};
+        return res.status(201).json({
+          id: c.id,
+          user_id: c.user_id,
+          content: c.content,
+          created_at: c.created_at,
+          username: u.username || 'student',
+          student_name: u.student_name || u.username || 'Student',
+          is_verified: !!u.is_verified,
+          branch: u.branch || null,
+          profile_pic_base64: u.profile_pic_base64 || null
+        });
+      }
+    } catch (restErr) {
+      console.error('[Supabase REST Comment Fallback Error]:', restErr.message);
+    }
     res.status(500).json({ error: 'Server error creating comment' });
   }
 });
