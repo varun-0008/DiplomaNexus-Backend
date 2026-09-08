@@ -52,10 +52,16 @@ async function uploadBase64ToR2(base64Data, fileName, mimeType = 'image/png') {
       ContentType: mimeType,
     });
 
-    await r2Client.send(command);
+    let publicDomain = PUBLIC_DOMAIN || process.env.R2_PUBLIC_URL || process.env.R2_DEV_URL;
+    if (publicDomain) {
+      publicDomain = publicDomain.trim().replace(/\/$/, '');
+      if (!publicDomain.startsWith('http://') && !publicDomain.startsWith('https://')) {
+        publicDomain = `https://${publicDomain}`;
+      }
+    }
 
-    const publicUrl = PUBLIC_DOMAIN 
-      ? `${PUBLIC_DOMAIN.replace(/\/$/, '')}/${fileName}`
+    const publicUrl = publicDomain 
+      ? `${publicDomain}/${fileName}`
       : `https://${ACCOUNT_ID}.r2.cloudflarestorage.com/${BUCKET_NAME}/${fileName}`;
 
     console.log(`[R2 Storage] Successfully uploaded ${fileName} -> ${publicUrl}`);

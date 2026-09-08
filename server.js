@@ -300,9 +300,13 @@ async function uploadToR2(fileBufferOrBase64, fileName, contentType = 'image/jpe
 
   await r2Client.send(command);
 
-  const publicDomain = process.env.R2_PUBLIC_URL 
-    ? process.env.R2_PUBLIC_URL.replace(/\/$/, '') 
-    : (process.env.R2_DEV_URL ? process.env.R2_DEV_URL.replace(/\/$/, '') : null);
+  let publicDomain = process.env.R2_PUBLIC_URL || process.env.R2_PUBLIC_DOMAIN || process.env.R2_DEV_URL;
+  if (publicDomain) {
+    publicDomain = publicDomain.trim().replace(/\/$/, '');
+    if (!publicDomain.startsWith('http://') && !publicDomain.startsWith('https://')) {
+      publicDomain = `https://${publicDomain}`;
+    }
+  }
 
   return publicDomain ? `${publicDomain}/${fileName}` : null;
 }
