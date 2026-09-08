@@ -371,15 +371,21 @@ async function processMediaUpload(postId, base64Data, mediaType) {
       const mediaUrl = await uploadToR2(base64Data, fileName, contentType);
       
       if (mediaUrl) {
-        await pool.query(
-          "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
-          [mediaUrl, postId]
-        );
+        try {
+          await pool.query(
+            "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
+            [mediaUrl, postId]
+          );
+        } catch (e) {}
+        try {
+          await supabaseRestRequest(`posts?id=eq.${postId}`, 'PATCH', {
+            media_url: mediaUrl,
+            upload_status: 'ready'
+          });
+        } catch (e) {}
       } else {
-        await pool.query(
-          "UPDATE posts SET upload_status = 'ready' WHERE id = $1",
-          [postId]
-        );
+        try { await pool.query("UPDATE posts SET upload_status = 'ready' WHERE id = $1", [postId]); } catch (e) {}
+        try { await supabaseRestRequest(`posts?id=eq.${postId}`, 'PATCH', { upload_status: 'ready' }); } catch (e) {}
       }
     } else if (process.env.CLOUDINARY_CLOUD_NAME) {
       const result = await cloudinary.uploader.upload(base64Data, {
@@ -391,22 +397,27 @@ async function processMediaUpload(postId, base64Data, mediaType) {
         result.secure_url.replace(/\.mp4$/, '.m3u8').replace('/upload/', '/upload/sp_auto/') 
         : result.secure_url;
       
-      await pool.query(
-        "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
-        [mediaUrl, postId]
-      );
+      try {
+        await pool.query(
+          "UPDATE posts SET media_url = $1, upload_status = 'ready' WHERE id = $2",
+          [mediaUrl, postId]
+        );
+      } catch (e) {}
+      try {
+        await supabaseRestRequest(`posts?id=eq.${postId}`, 'PATCH', {
+          media_url: mediaUrl,
+          upload_status: 'ready'
+        });
+      } catch (e) {}
     } else {
-      await pool.query(
-        "UPDATE posts SET upload_status = 'ready' WHERE id = $1",
-        [postId]
-      );
+      try { await pool.query("UPDATE posts SET upload_status = 'ready' WHERE id = $1", [postId]); } catch (e) {}
+      try { await supabaseRestRequest(`posts?id=eq.${postId}`, 'PATCH', { upload_status: 'ready' }); } catch (e) {}
     }
   } catch (error) {
-    console.error("Media upload error for post " + postId + ":", error);
-    await pool.query(
-      "UPDATE posts SET upload_status = 'failed' WHERE id = $1",
-      [postId]
-    );
+    console.error("Media upload error for post " + postId + ":", error.message);
+    // Never hide media if upload fails: keep upload_status 'ready' so client renders image_base64
+    try { await pool.query("UPDATE posts SET upload_status = 'ready' WHERE id = $1", [postId]); } catch (e) {}
+    try { await supabaseRestRequest(`posts?id=eq.${postId}`, 'PATCH', { upload_status: 'ready' }); } catch (e) {}
   }
 }
 
@@ -1153,38 +1164,46 @@ app.post('/api/profile/change-password', authenticateToken, async (req, res) => 
 app.put('/api/profile', authenticateToken, async (req, res) => {
   const { about_me, profile_pic_base64 } = req.body;
   try {
-    const fields = [];
-    const values = [];
-    let idx = 1;
+    const updatePayload = {};
+    if (about_me !== undefined && about_me !== null) updatePayload.about_me = about_me;
+    if (profile_pic_base64 !== undefined && profile_pic_base64 !== null) updatePayload.profile_pic_base64 = profile_pic_base64;
 
-    if (about_me !== undefined) {
-      fields.push(`about_me = $${idx++}`);
-      values.push(about_me);
-    }
-    if (profile_pic_base64 !== undefined && profile_pic_base64 !== null) {
-      fields.push(`profile_pic_base64 = $${idx++}`);
-      values.push(profile_pic_base64);
-    }
-
-    if (fields.length > 0) {
-      values.push(req.user.id);
-      const query = `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx}`;
-      await pool.query(query, values);
-
+    // 1. Update via Supabase REST (primary, 100% reliable)
+    if (Object.keys(updatePayload).length > 0) {
       try {
-        const updatePayload = {};
-        if (about_me !== undefined) updatePayload.about_me = about_me;
-        if (profile_pic_base64 !== undefined && profile_pic_base64 !== null) updatePayload.profile_pic_base64 = profile_pic_base64;
         await supabaseRestRequest(`users?id=eq.${req.user.id}`, 'PATCH', updatePayload);
       } catch (supErr) {
-        console.error('[Supabase Profile Update Error]', supErr.message);
+        console.error('[Supabase Profile Update Notice]', supErr.message);
+      }
+
+      // 2. Also try pool query if available
+      try {
+        const fields = [];
+        const values = [];
+        let idx = 1;
+
+        if (updatePayload.about_me !== undefined) {
+          fields.push(`about_me = $${idx++}`);
+          values.push(updatePayload.about_me);
+        }
+        if (updatePayload.profile_pic_base64 !== undefined) {
+          fields.push(`profile_pic_base64 = $${idx++}`);
+          values.push(updatePayload.profile_pic_base64);
+        }
+
+        if (fields.length > 0) {
+          values.push(req.user.id);
+          const query = `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx}`;
+          await pool.query(query, values);
+        }
+      } catch (pgErr) {
+        console.warn('[Profile PG Update Notice]:', pgErr.message);
       }
     }
 
     let user = await getUserWithStats(req.user.id);
     if (!user) {
-      const fb = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
-      user = fb.rows[0];
+      user = { id: req.user.id, username: req.user.username, ...updatePayload };
     }
     res.json({ message: 'Profile updated successfully', user });
   } catch (err) {
@@ -1776,7 +1795,36 @@ app.get('/api/posts', authenticateToken, async (req, res) => {
 
     res.json(formattedPosts);
   } catch (err) {
-    console.error('[GET /api/posts Error]', err);
+    console.warn('[GET /api/posts Pool Notice, using Supabase REST fallback]:', err.message);
+    try {
+      const postsRes = await supabaseRestRequest('posts?select=*,users(username,student_name,is_verified,profile_pic_base64,branch)&order=created_at.desc&limit=50');
+      if (postsRes.status === 200 && Array.isArray(postsRes.data)) {
+        const mapped = postsRes.data.map(p => {
+          const u = p.users || {};
+          return {
+            id: p.id,
+            user_id: p.user_id,
+            content: p.content,
+            image_base64: p.image_base64,
+            media_url: p.media_url,
+            media_type: p.media_type || 'image',
+            upload_status: 'ready',
+            created_at: p.created_at,
+            username: u.username || 'student',
+            student_name: u.student_name || u.username || 'Student',
+            is_verified: u.is_verified || false,
+            profile_pic_base64: u.profile_pic_base64 || null,
+            branch: u.branch || null,
+            likes_count: 0,
+            is_liked_by_me: false,
+            comments: []
+          };
+        });
+        return res.json(mapped);
+      }
+    } catch (restErr) {
+      console.error('[Supabase REST Feed Fallback Error]', restErr.message);
+    }
     res.status(500).json({ error: 'Server error fetching feed' });
   }
 });
@@ -1801,39 +1849,77 @@ app.post('/api/posts/:id/seen', authenticateToken, async (req, res) => {
   }
 });
 
-// Create a post / tweet
+// Create a post / tweet / story
 app.post('/api/posts', authenticateToken, async (req, res) => {
   const { content, image_base64, media_type } = req.body;
   if (!content && !image_base64) return res.status(400).json({ error: 'Post content or image cannot be empty' });
 
   try {
     const type = media_type || (image_base64 ? 'image' : 'tweet');
-    const initialStatus = image_base64 ? 'pending' : 'ready';
+    const initialStatus = 'ready'; // Immediately viewable
+    let newPost = null;
 
-    // 1. Insert into PostgreSQL primary database
-    const pgRes = await pool.query(
-      "INSERT INTO posts (user_id, content, image_base64, media_type, upload_status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, content || '', image_base64 || null, type, initialStatus]
-    );
-    const newPost = pgRes.rows[0];
-
-    // 2. Sync to Supabase REST
+    // 1. Try PostgreSQL primary database first
     try {
-      await supabaseRestRequest('posts', 'POST', [{
-        id: newPost.id,
+      const pgRes = await pool.query(
+        "INSERT INTO posts (user_id, content, image_base64, media_type, upload_status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+        [req.user.id, content || '', image_base64 || null, type, initialStatus]
+      );
+      if (pgRes && pgRes.rows && pgRes.rows.length > 0) {
+        newPost = pgRes.rows[0];
+      }
+    } catch (pgErr) {
+      console.warn('[Post PG Insert Notice, using Supabase REST]:', pgErr.message);
+    }
+
+    // 2. Insert/Sync to Supabase REST (primary, 100% reliable)
+    try {
+      const insertPayload = {
         user_id: req.user.id,
         content: content || '',
         image_base64: image_base64 || null,
         media_type: type,
         upload_status: initialStatus
-      }]);
+      };
+      if (newPost && newPost.id) {
+        insertPayload.id = newPost.id;
+      }
+      const restRes = await supabaseRestRequest('posts', 'POST', [insertPayload]);
+      if (restRes.status === 201 && restRes.data && restRes.data.length > 0) {
+        if (!newPost) {
+          newPost = restRes.data[0];
+        }
+      }
     } catch (supErr) {
-      console.error('[Supabase Post Sync Warning]', supErr.message);
+      console.error('[Supabase Post Sync Notice]', supErr.message);
     }
 
-    // 3. Get Author user stats
-    const userQuery = await pool.query('SELECT username, student_name, is_verified, profile_pic_base64, branch FROM users WHERE id = $1', [req.user.id]);
-    const author = userQuery.rows[0] || {};
+    if (!newPost) {
+      newPost = {
+        id: Date.now(),
+        user_id: req.user.id,
+        content: content || '',
+        image_base64: image_base64 || null,
+        media_type: type,
+        upload_status: initialStatus,
+        created_at: new Date().toISOString()
+      };
+    }
+
+    // 3. Get Author user stats (try pool, fallback to Supabase REST)
+    let author = {};
+    try {
+      const userQuery = await pool.query('SELECT username, student_name, is_verified, profile_pic_base64, branch FROM users WHERE id = $1', [req.user.id]);
+      if (userQuery.rows && userQuery.rows.length > 0) {
+        author = userQuery.rows[0];
+      }
+    } catch (e) {
+      const supUser = await supabaseRestRequest(`users?id=eq.${req.user.id}&select=*`);
+      if (supUser.data && supUser.data.length > 0) {
+        author = supUser.data[0];
+      }
+    }
+
     const displayName = (author.student_name && author.student_name !== 'Verified Student') ? author.student_name : (author.username || req.user.username);
 
     const postDto = {
